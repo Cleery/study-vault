@@ -18,6 +18,7 @@ from .search import (
     parameter_values,
     rename_tag,
 )
+from .stats import get_statistics
 
 
 def _markdown_context(obj, fields):
@@ -300,3 +301,7 @@ def review_detail(request, pk):
     if context["show_reference"]:
         context.update(_markdown_context(question, ["reference_solution"]))
     return render(request, "question_bank/review_detail.html", context)
+
+
+def stats(request):
+    return render(request, "question_bank/stats.html", {"stats": get_statistics()})

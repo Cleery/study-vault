@@ -2,9 +2,9 @@ import uuid
 from pathlib import Path
 
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q
-from django.db.models.signals import m2m_changed
+from django.db.models.signals import m2m_changed, post_delete, pre_save
 from django.dispatch import receiver
 from django.utils import timezone
 from django.utils.text import slugify
@@ -170,6 +170,39 @@ class QuestionAttachment(TimeStampedModel):
 
     def __str__(self):
         return self.file.name
+
+
+def _delete_attachment_file_when_unreferenced(storage, name, *, excluding_pk=None):
+    if not name:
+        return
+
+    def cleanup():
+        references = QuestionAttachment.objects.filter(file=name)
+        if excluding_pk is not None:
+            references = references.exclude(pk=excluding_pk)
+        if not references.exists():
+            storage.delete(name)
+
+    transaction.on_commit(cleanup)
+
+
+@receiver(post_delete, sender=QuestionAttachment)
+def cleanup_deleted_attachment_file(sender, instance, **kwargs):
+    if instance.file:
+        _delete_attachment_file_when_unreferenced(instance.file.storage, instance.file.name)
+
+
+@receiver(pre_save, sender=QuestionAttachment)
+def cleanup_replaced_attachment_file(sender, instance, **kwargs):
+    if not instance.pk:
+        return
+    previous = sender.objects.filter(pk=instance.pk).only("file").first()
+    if previous and previous.file and previous.file.name != instance.file.name:
+        _delete_attachment_file_when_unreferenced(
+            previous.file.storage,
+            previous.file.name,
+            excluding_pk=instance.pk,
+        )
 
 
 class KnowledgeCard(TimeStampedModel):

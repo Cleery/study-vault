@@ -20,4 +20,5 @@ urlpatterns = [
     path("knowledge-cards/<uuid:pk>/edit/", views.knowledge_card_edit, name="knowledge-card-edit"),
     path("review/", views.review_list, name="review-list"),
     path("review/<uuid:pk>/", views.review_detail, name="review-detail"),
+    path("stats/", views.stats, name="stats"),
 ]

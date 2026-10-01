@@ -1,0 +1,15 @@
+{% extends "question_bank/base.html" %}
+{% block title %}统计 | 数学题库{% endblock %}
+{% block content %}
+<h1>学习统计</h1>
+<dl>
+  <dt>题目总数</dt><dd>{{ stats.question_total }}</dd>
+  <dt>近30天复习次数</dt><dd>{{ stats.reviews_last_30_days }}</dd>
+  <dt>近30天错误结果次数</dt><dd>{{ stats.errors_last_30_days }}</dd>
+  <dt>待复习题数</dt><dd>{{ stats.due_questions }}</dd>
+</dl>
+<h2>各科目题数</h2>
+<ul>{% for name, count in stats.questions_by_subject.items %}<li>{{ name }}: {{ count }}</li>{% empty %}<li>暂无数据</li>{% endfor %}</ul>
+<h2>各掌握程度题数</h2>
+<ul>{% for name, count in stats.questions_by_mastery.items %}<li>{{ name }}: {{ count }}</li>{% endfor %}</ul>
+{% endblock %}
