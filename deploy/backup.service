@@ -1,0 +1,20 @@
+[Unit]
+Description=Encrypted Math Question Bank backup
+After=local-fs.target
+RequiresMountsFor=/mnt/offline/math-question-bank
+
+[Service]
+Type=oneshot
+User=mathvault
+Group=www-data
+WorkingDirectory=/srv/math-question-bank/current
+EnvironmentFile=/etc/math-question-bank.env
+UMask=0077
+ExecStartPre=+/usr/bin/systemctl stop math-question-bank.service
+ExecStart=/srv/math-question-bank/venv/bin/python manage.py backup_bundle --output-dir /var/backups/math-question-bank --keep 14
+ExecStopPost=+/usr/bin/systemctl start math-question-bank.service
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/math-question-bank/shared /var/backups/math-question-bank /mnt/offline/math-question-bank

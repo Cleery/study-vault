@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Math Question Bank backup
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30m
+Unit=math-question-bank-backup.service
+
+[Install]
+WantedBy=timers.target
