@@ -1,6 +1,7 @@
 import json
 import zipfile
 from datetime import timedelta
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from django.core.management.base import CommandError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError
 from django.utils import timezone
+from PIL import Image
 
 from question_bank.exporting import export_bundle, import_bundle
 from question_bank.models import (
@@ -39,6 +41,12 @@ def section(subject):
 
 def make_question(subject, title, **kwargs):
     return Question.objects.create(subject=subject, title=title, draft=False, **kwargs)
+
+
+def png_bytes():
+    stream = BytesIO()
+    Image.new("RGB", (3, 3), "white").save(stream, format="PNG")
+    return stream.getvalue()
 
 
 @pytest.mark.django_db
@@ -92,7 +100,7 @@ def test_export_import_round_trip_preserves_relationships_and_attachments(tmp_pa
     KnowledgeCardPrerequisite.objects.create(knowledge_card=card, prerequisite=KnowledgeCard.objects.create(name="实数完备性", subject=subject, type="theorem"))
     attachment = QuestionAttachment.objects.create(
         question=question,
-        file=SimpleUploadedFile("figure.png", b"png-bytes"),
+        file=SimpleUploadedFile("figure.png", png_bytes()),
         file_kind="image",
         sort_order=0,
     )
@@ -118,7 +126,7 @@ def test_export_import_round_trip_preserves_relationships_and_attachments(tmp_pa
     assert imported.tags.get().name == "证明"
     assert imported.knowledge_cards.get().name == "极限定义"
     assert imported.attachments.count() == 1
-    assert imported.attachments.get().file.read() == b"png-bytes"
+    assert imported.attachments.get().file.read() == png_bytes()
     assert imported.review_records.count() == 1
 
 
@@ -169,6 +177,32 @@ def test_import_failure_removes_media_written_before_rollback(tmp_path, settings
     assert not any(settings.MEDIA_ROOT.rglob("*.png"))
 
     with pytest.raises(ValidationError):
+        import_bundle(invalid_bundle)
+
+    assert QuestionAttachment.objects.count() == 0
+    assert not any(settings.MEDIA_ROOT.rglob("*.png"))
+
+
+@pytest.mark.django_db(transaction=True)
+def test_import_rejects_an_attachment_that_is_not_a_valid_image(tmp_path, settings, subject):
+    settings.MEDIA_ROOT = tmp_path / "media"
+    question = make_question(subject, "伪造附件")
+    attachment = QuestionAttachment.objects.create(
+        question=question,
+        file=SimpleUploadedFile("forged.png", png_bytes()),
+        sort_order=0,
+    )
+    bundle = tmp_path / "bundle.zip"
+    export_bundle(bundle)
+
+    invalid_bundle = tmp_path / "invalid-image.zip"
+    with zipfile.ZipFile(bundle) as source, zipfile.ZipFile(invalid_bundle, "w") as target:
+        for item in source.infolist():
+            payload = b"<svg onload='alert(1)'></svg>" if item.filename.endswith(".png") else source.read(item)
+            target.writestr(item, payload)
+
+    attachment.delete()
+    with pytest.raises(ValidationError, match="有效图片"):
         import_bundle(invalid_bundle)
 
     assert QuestionAttachment.objects.count() == 0

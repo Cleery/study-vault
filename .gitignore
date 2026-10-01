@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.runtime/
 .venv/
 db.sqlite3
 media/

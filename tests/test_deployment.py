@@ -14,6 +14,7 @@ def production_env():
     env = os.environ.copy()
     env.update(
         {
+            "SECRET_KEY": "9qz0SPXxw48G7hD2XvYrK8fUQm3Lp6Nc1Tj5AaEwZs4Bd7Hi2Ko9RuVx0Fg3CePn",
             "DEBUG": "false",
             "DEV_AUTH_BYPASS": "false",
             "BACKUP_AGE_PUBLIC_KEY": "age1example",
@@ -39,6 +40,7 @@ def run_production_check(env):
     [
         ("DEBUG", "true", "DEBUG must be false"),
         ("DEV_AUTH_BYPASS", "true", "DEV_AUTH_BYPASS must be false"),
+        ("SECRET_KEY", "", "SECRET_KEY must contain at least 50 characters"),
         ("BACKUP_AGE_PUBLIC_KEY", "", "BACKUP_AGE_PUBLIC_KEY is required"),
         ("BACKUP_OFFLINE_PATH", "", "BACKUP_OFFLINE_PATH is required"),
     ],

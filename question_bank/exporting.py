@@ -16,6 +16,7 @@ from .models import (
     Subject,
     Tag,
 )
+from .validators import validate_image_upload
 
 MANIFEST_VERSION = 1
 ENTITY_NAMES = ("subjects", "sections", "questions", "attachments", "knowledge_cards", "tags", "review_records", "knowledge_card_prerequisites")
@@ -218,7 +219,10 @@ def _import_bundle(bundle, written_files):
             obj = QuestionAttachment.objects.filter(pk=data["id"]).first() or QuestionAttachment(question_id=question_id)
             obj.question_id, obj.file_kind, obj.sort_order = question_id, data.get("file_kind", "image"), data.get("sort_order", 0)
             if data["path"] in archive.namelist():
-                obj.file.save(Path(data["path"]).name, ContentFile(archive.read(data["path"])), save=False)
+                attachment_name = Path(data["path"]).name
+                attachment_content = ContentFile(archive.read(data["path"]), name=attachment_name)
+                validate_image_upload(attachment_content)
+                obj.file.save(attachment_name, attachment_content, save=False)
                 written_files.append((obj.file.storage, obj.file.name))
             obj.save()
         for data in entities["review_records"]:

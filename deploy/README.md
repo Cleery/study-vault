@@ -59,7 +59,7 @@ sudo editor /etc/math-question-bank.env
 sudo -u mathvault bash -lc 'set -a; source /etc/math-question-bank.env; set +a; cd /srv/math-question-bank/current; /srv/math-question-bank/venv/bin/python deploy/check-production-config.py'
 ```
 
-`DEBUG` 和 `DEV_AUTH_BYPASS` 必须为 `false`。生产预检还要求 `BACKUP_AGE_PUBLIC_KEY` 与 `BACKUP_OFFLINE_PATH` 存在。
+`DEBUG` 和 `DEV_AUTH_BYPASS` 必须为 `false`。`SECRET_KEY` 至少包含 50 个字符且不能使用 Django 的不安全前缀。生产预检还要求 `BACKUP_AGE_PUBLIC_KEY` 与 `BACKUP_OFFLINE_PATH` 存在。
 
 ## 4. 初始化数据和静态文件
 

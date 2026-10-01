@@ -1,4 +1,5 @@
 import bleach
+import html
 import markdown
 import re
 
@@ -30,5 +31,8 @@ def render_markdown(source):
         strip=True,
     )
     for index, formula in enumerate(formulas):
-        cleaned = cleaned.replace(f"MATHFORMULA{index}ENDMATHFORMULA", formula)
+        cleaned = cleaned.replace(
+            f"MATHFORMULA{index}ENDMATHFORMULA",
+            html.escape(formula, quote=False),
+        )
     return cleaned

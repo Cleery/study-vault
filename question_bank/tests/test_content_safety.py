@@ -75,3 +75,10 @@ def test_markdown_rendering_removes_raw_html_and_scripts_but_keeps_mathjax():
     assert "<strong>bold</strong>" in rendered
     for formula in ("$x^2$", "$$\\sum_{i=1}^n i$$", "\\(a+b\\)", "\\[x\\]"):
         assert formula in rendered
+
+
+def test_mathjax_formula_cannot_restore_raw_html_after_sanitizing():
+    rendered = render_markdown(r"$<img src=x onerror=alert(1)>$")
+
+    assert "<img" not in rendered.lower()
+    assert "$&lt;img src=x onerror=alert(1)&gt;$" in rendered

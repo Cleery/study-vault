@@ -19,6 +19,9 @@ def main():
         errors.append("DEBUG must be false")
     if is_true("DEV_AUTH_BYPASS"):
         errors.append("DEV_AUTH_BYPASS must be false")
+    secret_key = os.environ.get("SECRET_KEY", "").strip()
+    if len(secret_key) < 50 or secret_key.startswith("django-insecure-"):
+        errors.append("SECRET_KEY must contain at least 50 characters and must not use Django's insecure prefix")
     if not os.environ.get("BACKUP_AGE_PUBLIC_KEY", "").strip():
         errors.append("BACKUP_AGE_PUBLIC_KEY is required")
     if not os.environ.get("BACKUP_OFFLINE_PATH", "").strip():
