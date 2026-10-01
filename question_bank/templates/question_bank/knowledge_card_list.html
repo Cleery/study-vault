@@ -1,0 +1,12 @@
+{% extends "question_bank/base.html" %}
+{% block title %}知识卡片 | 数学题库{% endblock %}
+{% block content %}
+<h1>知识卡片</h1>
+<p><a href="{% url 'knowledge-card-create' %}">新建知识卡片</a></p>
+<form method="get">
+  <label>科目<select name="subject"><option value="">全部</option>{% for subject in subjects %}<option value="{{ subject.pk }}"{% if selected_subject == subject.pk|stringformat:'s' %} selected{% endif %}>{{ subject.name }}</option>{% endfor %}</select></label>
+  <label>类型<select name="type"><option value="">全部</option>{% for value,label in card_types %}<option value="{{ value }}"{% if selected_type == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <button type="submit">筛选</button>
+</form>
+<ul>{% for card in cards %}<li><a href="{% url 'knowledge-card-detail' card.pk %}">{{ card.name }}</a> <span>{{ card.get_type_display }}</span> <span>{{ card.subject.name }}</span></li>{% empty %}<li>暂无知识卡片。</li>{% endfor %}</ul>
+{% endblock %}

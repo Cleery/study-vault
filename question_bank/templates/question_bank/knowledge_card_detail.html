@@ -1,0 +1,15 @@
+{% extends "question_bank/base.html" %}
+{% block title %}{{ card.name }} | 知识卡片{% endblock %}
+{% block content %}
+<article>
+  <header><h1>{{ card.name }}</h1><p>{{ card.subject.name }}{% if card.section %} / {{ card.section.name }}{% endif %} · {{ card.get_type_display }}</p><a href="{% url 'knowledge-card-edit' card.pk %}">编辑</a></header>
+  <section><h2>正式表述</h2><div>{{ formal_statement_html|safe }}</div></section>
+  <section><h2>适用条件</h2><div>{{ conditions_html|safe }}</div></section>
+  <section><h2>证明</h2><div>{{ proof_html|safe }}</div></section>
+  <section><h2>使用信号</h2><div>{{ usage_signals_html|safe }}</div></section>
+  <section><h2>常见错误</h2><div>{{ common_mistakes_html|safe }}</div></section>
+  <section><h2>个人笔记</h2><div>{{ personal_notes_html|safe }}</div></section>
+  <section><h2>前置卡片</h2><ul>{% for prerequisite in card.prerequisite_cards.all %}<li><a href="{% url 'knowledge-card-detail' prerequisite.pk %}">{{ prerequisite.name }}</a></li>{% empty %}<li>无</li>{% endfor %}</ul></section>
+  <section><h2>关联题目</h2><ul>{% for question in card.questions.all %}<li><a href="{% url 'question-detail' question.pk %}">{{ question.title|default:question.pk }}</a></li>{% empty %}<li>无</li>{% endfor %}</ul></section>
+</article>
+{% endblock %}

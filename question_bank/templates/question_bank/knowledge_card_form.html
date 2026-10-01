@@ -1,0 +1,12 @@
+{% extends "question_bank/base.html" %}
+{% block title %}{{ page_title }} | 数学题库{% endblock %}
+{% block content %}
+<h1>{{ page_title }}</h1>
+<form method="post">
+  {% csrf_token %}
+  {{ form.non_field_errors }}
+  {% for field in form %}<div>{{ field.label_tag }}{{ field }}{{ field.errors }}</div>{% endfor %}
+  <button type="submit">保存</button>
+  <a href="{% if form.instance.pk %}{% url 'knowledge-card-detail' form.instance.pk %}{% else %}{% url 'knowledge-card-list' %}{% endif %}">取消</a>
+</form>
+{% endblock %}

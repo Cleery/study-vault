@@ -1,0 +1,23 @@
+{% extends "question_bank/base.html" %}
+{% block title %}{{ question.title|default:"题目详情" }} | 数学题库{% endblock %}
+{% block content %}
+<article>
+  <header>
+    <h1>{{ question.title|default:"未命名题目" }}</h1>
+    <p>{% if question.subject %}{{ question.subject }}{% endif %}{% if question.section %} / {{ question.section.name }}{% endif %}</p>
+    <a href="{% url 'question-edit' question.pk %}">编辑</a>
+    <form method="post" action="{% url 'question-archive' question.pk %}" style="display:inline">
+      {% csrf_token %}<button type="submit" onclick="return confirm('确认归档此题目吗？')">归档</button>
+    </form>
+  </header>
+  <section><h2>题干</h2><div>{{ statement_html|safe }}</div></section>
+  <section><h2>个人解答</h2><div>{{ personal_solution_html|safe }}</div></section>
+  <section><h2>参考解答</h2><div>{{ reference_solution_html|safe }}</div></section>
+  <section><h2>错误记录</h2><div>{{ error_note_html|safe }}</div></section>
+  <section>
+    <h2>图片附件</h2>
+    {% for attachment in question.attachments.all %}<figure><img src="{{ attachment.file.url }}" alt="题目附件 {{ forloop.counter }}" style="max-width:100%"><figcaption>{{ forloop.counter }}</figcaption></figure>{% empty %}<p>暂无附件。</p>{% endfor %}
+  </section>
+  <section><h2>关联知识卡片</h2><ul>{% for card in question.knowledge_cards.all %}<li><a href="{% url 'knowledge-card-detail' card.pk %}">{{ card.name }}</a></li>{% empty %}<li>暂无关联卡片。</li>{% endfor %}</ul></section>
+</article>
+{% endblock %}

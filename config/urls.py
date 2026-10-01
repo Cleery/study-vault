@@ -1,5 +1,5 @@
 from django.http import HttpResponse
-from django.urls import path
+from django.urls import include, path
 
 
 def health(request):
@@ -7,5 +7,6 @@ def health(request):
 
 
 urlpatterns = [
+    path("", include("question_bank.urls")),
     path("health/", health, name="health"),
 ]
