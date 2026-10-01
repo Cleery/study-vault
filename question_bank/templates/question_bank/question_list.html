@@ -1,0 +1,73 @@
+{% extends "question_bank/base.html" %}
+{% block title %}题目检索 | 数学题库{% endblock %}
+{% block content %}
+<h1>题目检索</h1>
+<div class="question-index">
+  <aside aria-label="筛选条件">
+    <form method="get" id="question-filter-form">
+      <label for="question-query">关键词</label>
+      <input id="question-query" type="search" name="q" value="{{ query }}" placeholder="标题、题干、解法或错误记录">
+      <fieldset><legend>科目</legend>
+        {% for subject in subjects %}<label><input type="checkbox" name="subject" value="{{ subject.pk }}"{% if subject.pk|stringformat:'s' in selected_subjects %} checked{% endif %}> {{ subject.name }}</label>{% endfor %}
+      </fieldset>
+      <fieldset><legend>章节</legend>
+        {% for section in sections %}<label><input type="checkbox" name="section" value="{{ section.pk }}"{% if section.pk|stringformat:'s' in selected_sections %} checked{% endif %}> {{ section.name }}</label>{% endfor %}
+      </fieldset>
+      <fieldset><legend>标签</legend>
+        {% for tag in tags %}<label><input type="checkbox" name="tag" value="{{ tag.pk }}"{% if tag.pk|stringformat:'s' in selected_tags %} checked{% endif %}> {{ tag.name }}</label>{% endfor %}
+      </fieldset>
+      <fieldset><legend>掌握程度</legend>
+        {% for value,label in mastery_choices %}<label><input type="checkbox" name="mastery" value="{{ value }}"{% if value in selected_mastery %} checked{% endif %}> {{ label }}</label>{% endfor %}
+      </fieldset>
+      <label for="knowledge-card">知识卡片</label>
+      <select id="knowledge-card" name="knowledge_card" multiple>
+        {% for card in knowledge_cards %}<option value="{{ card.pk }}"{% if card.pk|stringformat:'s' in selected_cards %} selected{% endif %}>{{ card.name }}</option>{% endfor %}
+      </select>
+      <label><input type="checkbox" name="due" value="1"{% if request.GET.due %} checked{% endif %}> 仅显示到期题目</label>
+      <button type="submit">应用筛选</button>
+      <button type="button" id="save-filter">保存当前筛选</button>
+    </form>
+    <p><a href="{% url 'tag-manage' %}">管理标签</a></p>
+  </aside>
+
+  <section aria-label="检索结果">
+    <div class="active-filters">
+      {% for item in active_filters %}<span class="filter-chip">{{ item.label }}</span>{% empty %}<span>当前没有筛选条件</span>{% endfor %}
+    </div>
+    <p>共 {{ paginator.count }} 道题目</p>
+    <ul>
+      {% for question in questions %}
+        <li>
+          <article>
+            <h2><a href="{% url 'question-detail' question.pk %}">{{ question.title|default:"未命名题目" }}</a></h2>
+            {% if question.subject %}<p>{{ question.subject.name }}{% if question.section %} / {{ question.section.name }}{% endif %}</p>{% endif %}
+            {% if question.statement %}<p>{{ question.statement|striptags|truncatechars:180 }}</p>{% endif %}
+            <p>掌握程度：{{ question.get_mastery_display }}{% if question.next_review_at %} · 下次复习：{{ question.next_review_at|date:"Y-m-d H:i" }}{% endif %}</p>
+            <p>{% for tag in question.tags.all %}<span>{{ tag.name }}</span>{% empty %}无标签{% endfor %}</p>
+            {% for card in question.knowledge_cards.all %}<a href="{% url 'knowledge-card-detail' card.pk %}">查看知识卡片：{{ card.name }}</a>{% endfor %}
+          </article>
+        </li>
+      {% empty %}<li><p>没有匹配的题目。</p><a href="{% url 'question-create' %}">新建题目</a></li>{% endfor %}
+    </ul>
+    {% if page_obj.has_other_pages %}<nav aria-label="分页">
+      {% if page_obj.has_previous %}<a href="?{{ request.GET.urlencode }}&page={{ page_obj.previous_page_number }}">上一页</a>{% endif %}
+      <span>第 {{ page_obj.number }} / {{ page_obj.paginator.num_pages }} 页</span>
+      {% if page_obj.has_next %}<a href="?{{ request.GET.urlencode }}&page={{ page_obj.next_page_number }}">下一页</a>{% endif %}
+    </nav>{% endif %}
+  </section>
+</div>
+<script>
+(() => {
+  const key = "math-question-bank:saved-filters";
+  const button = document.getElementById("save-filter");
+  if (!button) return;
+  button.addEventListener("click", () => {
+    const params = new URLSearchParams(new FormData(document.getElementById("question-filter-form")));
+    const saved = JSON.parse(localStorage.getItem(key) || "[]");
+    saved.push({name: new Date().toLocaleString(), query: params.toString(), updated_at: new Date().toISOString()});
+    localStorage.setItem(key, JSON.stringify(saved.slice(-20)));
+    button.textContent = "已保存";
+  });
+})();
+</script>
+{% endblock %}

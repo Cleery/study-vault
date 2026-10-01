@@ -1,6 +1,7 @@
 from django import forms
+from django.db.models import Q
 
-from .models import KnowledgeCard, Question, Section
+from .models import KnowledgeCard, Question, Section, Tag
 from .validators import validate_image_upload
 
 
@@ -51,11 +52,28 @@ class QuestionForm(forms.ModelForm):
             "tags": forms.SelectMultiple(attrs={"size": 5}),
         }
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.pk:
+            self.fields["tags"].queryset = Tag.objects.filter(
+                Q(archived=False) | Q(questions=self.instance)
+            ).distinct().order_by("name", "id")
+        else:
+            self.fields["tags"].queryset = Tag.objects.filter(archived=False).order_by(
+                "name", "id"
+            )
+
     def clean_attachments(self):
         uploads = self.cleaned_data.get("attachments", [])
         for upload in uploads:
             validate_image_upload(upload)
         return uploads
+
+    def clean_tags(self):
+        tags = self.cleaned_data.get("tags")
+        if self.instance and self.instance.pk:
+            return tags
+        return tags.exclude(archived=True) if tags is not None else tags
 
     def clean(self):
         cleaned = super().clean()
@@ -114,4 +132,18 @@ class KnowledgeCardForm(forms.ModelForm):
         if subject and section and section.subject_id != subject.pk:
             self.add_error("section", "章节必须属于知识卡片的科目。")
         return cleaned
+
+
+class TagForm(forms.ModelForm):
+    class Meta:
+        model = Tag
+        fields = ["name", "parent", "kind"]
+        widgets = {"parent": forms.Select(attrs={"class": "tag-parent"})}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        queryset = Tag.objects.filter(archived=False).order_by("name", "id")
+        if self.instance and self.instance.pk:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        self.fields["parent"].queryset = queryset
 

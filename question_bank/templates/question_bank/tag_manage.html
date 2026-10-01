@@ -1,0 +1,26 @@
+{% extends "question_bank/base.html" %}
+{% block title %}标签管理 | 数学题库{% endblock %}
+{% block content %}
+<h1>标签管理</h1>
+<form method="post">
+  {% csrf_token %}
+  {{ form.non_field_errors }}
+  {% for field in form %}<div>{{ field.label_tag }}{{ field }}{{ field.errors }}</div>{% endfor %}
+  <button type="submit">保存标签</button>
+  {% if editing_tag %}<a href="{% url 'tag-manage' %}">取消编辑</a>{% endif %}
+</form>
+<h2>已有标签</h2>
+<ul>
+  {% for tag in tags %}
+    <li>
+      {{ tag.name }}{% if tag.parent %}（父级：{{ tag.parent.name }}）{% endif %}{% if tag.archived %} [已归档]{% endif %}
+      <a href="{% url 'tag-edit' tag.pk %}">编辑</a>
+      <form method="post" action="{% url 'tag-archive' tag.pk %}" style="display:inline">{% csrf_token %}<button type="submit">归档</button></form>
+      <form method="post" action="{% url 'tag-merge' tag.pk %}" style="display:inline">
+        {% csrf_token %}<label><span class="sr-only">合并到</span><select name="target">{% for target in tags %}{% if target.pk != tag.pk %}<option value="{{ target.pk }}">{{ target.name }}</option>{% endif %}{% endfor %}</select></label>
+        <button type="submit">合并</button>
+      </form>
+    </li>
+  {% empty %}<li>暂无标签。</li>{% endfor %}
+</ul>
+{% endblock %}
