@@ -141,7 +141,8 @@ class Question(TimeStampedModel):
 
 def question_attachment_upload_to(instance, filename):
     suffix = Path(filename).suffix.lower()
-    return f"questions/{instance.question_id}/{uuid.uuid4().hex}{suffix}"
+    question_id = getattr(instance, "question_id", None)
+    return f"questions/{question_id}/{uuid.uuid4().hex}{suffix}"
 
 
 class QuestionAttachment(TimeStampedModel):
