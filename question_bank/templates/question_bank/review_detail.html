@@ -11,9 +11,9 @@
   <section><h2>个人解答</h2><div>{{ personal_solution_html|safe }}</div></section>
   <section><h2>错误记录</h2><div>{{ error_note_html|safe }}</div></section>
   {% if show_reference %}
-    <section><h2>参考解答</h2><div>{{ reference_solution_html|safe }}</div></section>
+    <section data-solution-reveal><h2>参考解答</h2><div>{{ reference_solution_html|safe }}</div></section>
   {% else %}
-    <p><a href="?show_reference=1">显示参考解答</a></p>
+    <p><a href="?show_reference=1" data-solution-reveal aria-label="显示参考解答">显示参考解答</a></p>
   {% endif %}
   {% if error %}<p role="alert">{{ error }}</p>{% endif %}
   <form method="post">

@@ -32,7 +32,7 @@
 
   <section aria-label="检索结果">
     <div class="active-filters">
-      {% for item in active_filters %}<span class="filter-chip">{{ item.label }}</span>{% empty %}<span>当前没有筛选条件</span>{% endfor %}
+      {% for item in active_filters %}<span class="filter-chip" aria-label="移除筛选条件：{{ item.label }}">{{ item.label }}</span>{% empty %}<span>当前没有筛选条件</span>{% endfor %}
     </div>
     <p>共 {{ paginator.count }} 道题目</p>
     <ul>

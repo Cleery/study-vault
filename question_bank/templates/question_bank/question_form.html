@@ -10,7 +10,7 @@
       {{ field.label_tag }}
       {{ field }}
       {{ field.errors }}
-      {% if field.name == "attachments" %}<small>支持 PNG、JPEG、WebP，可一次选择多张图片。</small>{% endif %}
+      {% if field.name == "attachments" %}<small>支持 PNG、JPEG、WebP，可一次选择多张图片。</small><div id="image-preview" data-image-preview aria-live="polite"></div>{% endif %}
     </div>
   {% endfor %}
   <button type="submit">保存</button>

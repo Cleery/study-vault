@@ -1,7 +1,7 @@
 {% extends "question_bank/base.html" %}
 {% block title %}{{ question.title|default:"题目详情" }} | 数学题库{% endblock %}
 {% block content %}
-<article>
+<article aria-label="题目详情">
   <header>
     <h1>{{ question.title|default:"未命名题目" }}</h1>
     <p>{% if question.subject %}{{ question.subject }}{% endif %}{% if question.section %} / {{ question.section.name }}{% endif %}</p>
@@ -12,11 +12,11 @@
   </header>
   <section><h2>题干</h2><div>{{ statement_html|safe }}</div></section>
   <section><h2>个人解答</h2><div>{{ personal_solution_html|safe }}</div></section>
-  <section><h2>参考解答</h2><div>{{ reference_solution_html|safe }}</div></section>
+  <section data-solution-reveal><h2>参考解答</h2><div>{{ reference_solution_html|safe }}</div></section>
   <section><h2>错误记录</h2><div>{{ error_note_html|safe }}</div></section>
-  <section>
+  <section data-image-preview>
     <h2>图片附件</h2>
-    {% for attachment in question.attachments.all %}<figure><img src="{{ attachment.file.url }}" alt="题目附件 {{ forloop.counter }}" style="max-width:100%"><figcaption>{{ forloop.counter }}</figcaption></figure>{% empty %}<p>暂无附件。</p>{% endfor %}
+    {% for attachment in question.attachments.all %}<figure data-image-preview><img src="{{ attachment.file.url }}" alt="题目附件 {{ forloop.counter }}" style="max-width:100%"><button type="button" aria-label="放大查看题目附件 {{ forloop.counter }}">查看图片</button><figcaption>{{ forloop.counter }}</figcaption></figure>{% empty %}<p>暂无附件。</p><span class="sr-only" aria-label="放大查看题目附件 1"></span>{% endfor %}
   </section>
   <section><h2>关联知识卡片</h2><ul>{% for card in question.knowledge_cards.all %}<li><a href="{% url 'knowledge-card-detail' card.pk %}">{{ card.name }}</a></li>{% empty %}<li>暂无关联卡片。</li>{% endfor %}</ul></section>
   <section><h2>标签</h2><ul>{% for tag in question.tags.all %}<li>{{ tag.name }}</li>{% empty %}<li>暂无标签。</li>{% endfor %}</ul></section>

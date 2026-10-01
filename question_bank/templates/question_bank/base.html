@@ -6,22 +6,31 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}数学题库{% endblock %}</title>
   {% block extra_head %}{% endblock %}
+  <link rel="stylesheet" href="{% static 'question_bank/css/app.css' %}">
   <script>
     window.MathJax = {tex: {inlineMath: [['\\(', '\\)'], ['$', '$']]}};
   </script>
   <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
-  <header>
-    <nav aria-label="主导航">
-      <a href="/">题库</a>
+  <header class="site-header">
+    <a class="brand" href="{% url 'question-list' %}"><span class="brand-mark">∑</span><span>题库自习室</span></a>
+    <nav class="main-nav" aria-label="主导航">
+      <a href="{% url 'question-list' %}">题目检索</a>
       <a href="{% url 'question-create' %}">新建题目</a>
       <a href="{% url 'knowledge-card-list' %}">知识卡片</a>
-      <a href="/health/">健康检查</a>
+      <a href="{% url 'review-list' %}">待复习</a>
+      <a href="{% url 'tag-manage' %}">标签</a>
     </nav>
+    <div class="mobile-toolbar"><button class="assistant-toggle" type="button" data-assistant-toggle data-collapsible-panel aria-expanded="true" aria-controls="assistant-panel" aria-label="打开学习助手">助手</button></div>
   </header>
-  <main>
-    {% block content %}{% endblock %}
-  </main>
+  <div class="app-shell">
+    <main class="main-content">{% block content %}{% endblock %}</main>
+    <aside class="assistant-panel" id="assistant-panel" data-assistant-panel aria-label="学习助手">
+      <img src="{% static 'question_bank/assets/character-placeholder.svg' %}" alt="学习助手占位图">
+      <strong>今日学习</strong><span>把一个定理讲清楚，再做一道应用题。</span>
+    </aside>
+  </div>
+  <script defer src="{% static 'question_bank/js/app.js' %}"></script>
 </body>
 </html>

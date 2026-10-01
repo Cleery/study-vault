@@ -21,7 +21,11 @@ class MultipleFileField(forms.FileField):
 
 
 class QuestionForm(forms.ModelForm):
-    attachments = MultipleFileField(required=False, label="图片附件")
+    attachments = MultipleFileField(
+        required=False,
+        label="图片附件",
+        widget=MultipleFileInput(attrs={"data-image-input": "true", "data-preview": "image-preview"}),
+    )
     mastery = forms.ChoiceField(
         choices=Question.MASTERY_CHOICES,
         required=False,
