@@ -1,0 +1,13 @@
+.worktrees/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+db.sqlite3
+media/
+staticfiles/
+.env
+backups/
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
