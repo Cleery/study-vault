@@ -19,5 +19,6 @@
     {% for attachment in question.attachments.all %}<figure><img src="{{ attachment.file.url }}" alt="题目附件 {{ forloop.counter }}" style="max-width:100%"><figcaption>{{ forloop.counter }}</figcaption></figure>{% empty %}<p>暂无附件。</p>{% endfor %}
   </section>
   <section><h2>关联知识卡片</h2><ul>{% for card in question.knowledge_cards.all %}<li><a href="{% url 'knowledge-card-detail' card.pk %}">{{ card.name }}</a></li>{% empty %}<li>暂无关联卡片。</li>{% endfor %}</ul></section>
+  <section><h2>标签</h2><ul>{% for tag in question.tags.all %}<li>{{ tag.name }}</li>{% empty %}<li>暂无标签。</li>{% endfor %}</ul></section>
 </article>
 {% endblock %}

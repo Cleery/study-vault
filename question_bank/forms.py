@@ -39,6 +39,7 @@ class QuestionForm(forms.ModelForm):
             "error_note",
             "mastery",
             "draft",
+            "tags",
             "knowledge_cards",
         ]
         widgets = {
@@ -47,6 +48,7 @@ class QuestionForm(forms.ModelForm):
             "reference_solution": forms.Textarea(attrs={"rows": 6}),
             "error_note": forms.Textarea(attrs={"rows": 4}),
             "knowledge_cards": forms.SelectMultiple(attrs={"size": 5}),
+            "tags": forms.SelectMultiple(attrs={"size": 5}),
         }
 
     def clean_attachments(self):

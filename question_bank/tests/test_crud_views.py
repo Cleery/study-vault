@@ -58,7 +58,7 @@ def test_question_creation_accepts_markdown_latex_and_ordered_images(client, sub
             "title": "极限题",
             "statement": "**求极限** $x^2$",
             "personal_solution": "\n$$x=0$$",
-            "reference_solution": r"\n\(x=0\)",
+            "reference_solution": "\\n\\(x=0\\)",
             "error_note": "常见错误",
             "mastery": "unstarted",
             "draft": "",
