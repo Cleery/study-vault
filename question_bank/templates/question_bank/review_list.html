@@ -1,0 +1,29 @@
+{% extends "question_bank/base.html" %}
+{% block title %}复习队列 | 数学题库{% endblock %}
+{% block content %}
+<h1>复习队列</h1>
+<nav aria-label="复习队列">
+  <a href="?queue=due{% if selected_card %}&amp;knowledge_card={{ selected_card }}{% endif %}">今日到期（{{ due_questions|length }}）</a>
+  <a href="?queue=recent{% if selected_card %}&amp;knowledge_card={{ selected_card }}{% endif %}">最近错误（{{ recent_mistakes|length }}）</a>
+  <a href="?queue=overdue{% if selected_card %}&amp;knowledge_card={{ selected_card }}{% endif %}">逾期（{{ overdue_questions|length }}）</a>
+</nav>
+<form method="get">
+  <input type="hidden" name="queue" value="{{ queue }}">
+  <label>知识卡片
+    <select name="knowledge_card">
+      <option value="">全部</option>
+      {% for card in knowledge_cards %}<option value="{{ card.pk }}"{% if selected_card == card.pk|stringformat:'s' %} selected{% endif %}>{{ card.name }}</option>{% endfor %}
+    </select>
+  </label>
+  <button type="submit">筛选</button>
+</form>
+<ol>
+  {% for question in questions %}
+    <li>
+      <a href="{% url 'review-detail' question.pk %}">{{ question.title|default:"未命名题目" }}</a>
+      {% if question.subject %}<span>{{ question.subject.name }}</span>{% endif %}
+      {% if question.next_review_at %}<time datetime="{{ question.next_review_at|date:'c' }}">{{ question.next_review_at|date:"Y-m-d H:i" }}</time>{% endif %}
+    </li>
+  {% empty %}<li>当前队列没有题目。</li>{% endfor %}
+</ol>
+{% endblock %}

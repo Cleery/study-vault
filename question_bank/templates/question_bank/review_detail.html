@@ -1,0 +1,33 @@
+{% extends "question_bank/base.html" %}
+{% block title %}复习：{{ question.title|default:"未命名题目" }} | 数学题库{% endblock %}
+{% block content %}
+<article>
+  <header>
+    <h1>{{ question.title|default:"未命名题目" }}</h1>
+    {% if question.subject %}<p>{{ question.subject.name }}{% if question.section %} / {{ question.section.name }}{% endif %}</p>{% endif %}
+    <p>当前掌握程度：{{ question.get_mastery_display }}</p>
+  </header>
+  <section><h2>题干</h2><div>{{ statement_html|safe }}</div></section>
+  <section><h2>个人解答</h2><div>{{ personal_solution_html|safe }}</div></section>
+  <section><h2>错误记录</h2><div>{{ error_note_html|safe }}</div></section>
+  {% if show_reference %}
+    <section><h2>参考解答</h2><div>{{ reference_solution_html|safe }}</div></section>
+  {% else %}
+    <p><a href="?show_reference=1">显示参考解答</a></p>
+  {% endif %}
+  {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+  <form method="post">
+    {% csrf_token %}
+    <fieldset><legend>本次结果</legend>
+      <label><input type="radio" name="result" value="not_done" required>未完成</label>
+      <label><input type="radio" name="result" value="hinted">看提示完成</label>
+      <label><input type="radio" name="result" value="independent">独立完成</label>
+      <label><input type="radio" name="result" value="mastered">熟练完成</label>
+      <label><input type="radio" name="result" value="skipped">跳过</label>
+    </fieldset>
+    <label>用时（秒）<input type="number" name="duration_seconds" min="0"></label>
+    <label>备注<textarea name="note" rows="4"></textarea></label>
+    <button type="submit">提交复习</button>
+  </form>
+</article>
+{% endblock %}

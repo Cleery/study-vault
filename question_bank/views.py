@@ -1,6 +1,6 @@
 from django.contrib import messages
 from django.db import transaction
-from django.http import HttpResponseRedirect
+from django.http import HttpResponseBadRequest, HttpResponseRedirect
 from django.core.paginator import Paginator
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -9,6 +9,7 @@ from django.views.decorators.http import require_http_methods, require_POST
 from .forms import KnowledgeCardForm, QuestionForm, TagForm
 from .markdown import render_markdown
 from .models import KnowledgeCard, Question, QuestionAttachment, Section, Subject, Tag
+from .review import due_today_questions, get_overdue_questions, get_recent_mistakes, apply_review
 from .search import (
     active_tag_queryset,
     archive_tag,
@@ -242,3 +243,60 @@ def knowledge_card_detail(request, pk):
         )
     )
     return render(request, "question_bank/knowledge_card_detail.html", context)
+
+
+def review_list(request):
+    """Review queues: due today, recent mistakes, and overdue questions."""
+    queue = request.GET.get("queue", "due")
+    knowledge_card = request.GET.get("knowledge_card") or request.GET.get("card") or ""
+    due_questions = due_today_questions(knowledge_card=knowledge_card or None)
+    recent_mistakes = get_recent_mistakes(knowledge_card=knowledge_card or None)
+    overdue = get_overdue_questions(knowledge_card=knowledge_card or None)
+    queues = {
+        "due": due_questions,
+        "recent": recent_mistakes,
+        "mistakes": recent_mistakes,
+        "overdue": overdue,
+    }
+    return render(
+        request,
+        "question_bank/review_list.html",
+        {
+            "queue": queue,
+            "questions": queues.get(queue, due_questions),
+            "due_questions": due_questions,
+            "recent_mistakes": recent_mistakes,
+            "overdue_questions": overdue,
+            "knowledge_cards": KnowledgeCard.objects.order_by("name", "id"),
+            "selected_card": str(knowledge_card),
+        },
+    )
+
+
+@require_http_methods(["GET", "POST"])
+def review_detail(request, pk):
+    question = get_object_or_404(
+        Question.objects.select_related("subject", "section").prefetch_related("knowledge_cards"),
+        pk=pk,
+        deleted_at__isnull=True,
+        archived=False,
+    )
+    error = ""
+    if request.method == "POST":
+        result = request.POST.get("result", "")
+        try:
+            apply_review(
+                question,
+                result,
+                duration_seconds=request.POST.get("duration_seconds"),
+                note=request.POST.get("note", ""),
+            )
+        except (TypeError, ValueError) as exc:
+            error = str(exc)
+        else:
+            return redirect(f"{reverse('review-detail', kwargs={'pk': question.pk})}?submitted=1")
+    context = {"question": question, "error": error, "show_reference": bool(request.GET.get("show_reference") or request.GET.get("submitted"))}
+    context.update(_markdown_context(question, ["statement", "personal_solution", "error_note"]))
+    if context["show_reference"]:
+        context.update(_markdown_context(question, ["reference_solution"]))
+    return render(request, "question_bank/review_detail.html", context)
