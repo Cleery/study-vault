@@ -1,4 +1,5 @@
 import io
+import re
 
 import pytest
 from django.test import Client, override_settings
@@ -38,6 +39,37 @@ def test_draft_question_creation_allows_empty_content(client):
     question = Question.objects.get()
     assert question.draft is True
     assert question.title == ""
+
+
+@pytest.mark.django_db
+def test_new_question_cancel_returns_to_list_and_publish_label_is_create(client):
+    response = client.get(reverse("question-create"))
+    body = response.content.decode()
+
+    assert response.status_code == 200
+    assert f'href="{reverse("question-list")}" data-cancel-edit' in body
+    assert 'value="publish">保存题目</button>' in body
+    assert 'data-confirm-draft' not in body
+    assert Question.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_invalid_new_question_keeps_cancel_target_at_list(client):
+    response = client.post(reverse("question-create"), {"save_intent": "publish"})
+
+    assert response.status_code == 200
+    assert f'href="{reverse("question-list")}" data-cancel-edit' in response.content.decode()
+    assert Question.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_saved_question_cancel_returns_to_detail(client, subject):
+    question = Question.objects.create(subject=subject, title="已保存题目", draft=False)
+
+    response = client.get(reverse("question-edit", args=[question.pk]))
+
+    assert response.status_code == 200
+    assert f'href="{reverse("question-detail", args=[question.pk])}" data-cancel-edit' in response.content.decode()
 
 
 @pytest.mark.django_db
@@ -442,6 +474,46 @@ def test_knowledge_card_creation_persists_all_fields_and_question_link(client, s
     assert card.formal_statement == "若连续则存在 $c$"
     assert list(card.prerequisite_cards.all()) == [prerequisite]
     assert list(card.questions.all()) == [question]
+
+
+@pytest.mark.django_db
+def test_new_knowledge_card_cancel_links_return_to_list(client):
+    response = client.get(reverse("knowledge-card-create"))
+    body = response.content.decode()
+
+    assert response.status_code == 200
+    assert "知识卡片 · 新建" in body
+    assert re.findall(r'<a[^>]*href="([^"]+)"[^>]*>取消</a>', body) == [
+        reverse("knowledge-card-list"), reverse("knowledge-card-list")
+    ]
+    assert KnowledgeCard.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_invalid_new_knowledge_card_keeps_cancel_links_at_list(client):
+    response = client.post(reverse("knowledge-card-create"), {"name": "未保存卡片"})
+    body = response.content.decode()
+
+    assert response.status_code == 200
+    assert re.findall(r'<a[^>]*href="([^"]+)"[^>]*>取消</a>', body) == [
+        reverse("knowledge-card-list"), reverse("knowledge-card-list")
+    ]
+    assert KnowledgeCard.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_saved_knowledge_card_cancel_links_return_to_detail(client, subject):
+    card = KnowledgeCard.objects.create(name="已保存卡片", subject=subject, type="theorem")
+
+    response = client.get(reverse("knowledge-card-edit", args=[card.pk]))
+    body = response.content.decode()
+
+    assert response.status_code == 200
+    assert "知识卡片 · 编辑" in body
+    assert re.findall(r'<a[^>]*href="([^"]+)"[^>]*>取消</a>', body) == [
+        reverse("knowledge-card-detail", args=[card.pk]),
+        reverse("knowledge-card-detail", args=[card.pk]),
+    ]
 
 
 @pytest.mark.django_db

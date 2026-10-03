@@ -171,9 +171,9 @@
       <footer class="workbench-actions">
         <p data-save-status role="status" aria-live="polite"></p>
         <div>
-          <button type="submit" name="save_intent" value="draft"{% if conflict %} disabled{% endif %}{% if form.instance.pk and not form.instance.draft %} data-confirm-draft{% endif %}>{% if form.instance.pk and not form.instance.draft %}转为草稿{% else %}保存草稿{% endif %}</button>
-          <button type="submit" name="save_intent" value="publish"{% if conflict %} disabled{% endif %}>{% if form.instance.pk and not form.instance.draft %}保存修改{% elif form.instance.pk %}发布题目{% else %}保存题目{% endif %}</button>
-          <a href="{% if form.instance.pk %}{% url 'question-detail' form.instance.pk %}{% else %}{% url 'question-list' %}{% endif %}" data-cancel-edit>取消</a>
+          <button type="submit" name="save_intent" value="draft"{% if conflict %} disabled{% endif %}{% if is_edit and not form.instance.draft %} data-confirm-draft{% endif %}>{% if is_edit and not form.instance.draft %}转为草稿{% else %}保存草稿{% endif %}</button>
+          <button type="submit" name="save_intent" value="publish"{% if conflict %} disabled{% endif %}>{% if is_edit and not form.instance.draft %}保存修改{% elif is_edit %}发布题目{% else %}保存题目{% endif %}</button>
+          <a href="{% if is_edit %}{% url 'question-detail' form.instance.pk %}{% else %}{% url 'question-list' %}{% endif %}" data-cancel-edit>取消</a>
         </div>
       </footer>
     </div>

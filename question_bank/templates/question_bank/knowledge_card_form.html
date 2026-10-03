@@ -5,9 +5,9 @@
 {% block content %}
 <div class="knowledge-card-workbench" data-knowledge-card-form data-preview-url="{% url 'markdown-preview' %}">
   <header class="knowledge-card-workbench__header">
-    <div><p class="eyebrow">知识卡片 · {% if form.instance.pk %}编辑{% else %}新建{% endif %}</p><h1>{{ page_title }}</h1></div>
+    <div><p class="eyebrow">知识卡片 · {% if is_edit %}编辑{% else %}新建{% endif %}</p><h1>{{ page_title }}</h1></div>
     <div class="knowledge-card-workbench__actions">
-      <a class="button button-secondary" href="{% if form.instance.pk %}{% url 'knowledge-card-detail' form.instance.pk %}{% else %}{% url 'knowledge-card-list' %}{% endif %}">取消</a>
+      <a class="button button-secondary" href="{% if is_edit %}{% url 'knowledge-card-detail' form.instance.pk %}{% else %}{% url 'knowledge-card-list' %}{% endif %}">取消</a>
       <button type="submit" form="knowledge-card-form">保存卡片</button>
     </div>
   </header>
@@ -34,7 +34,7 @@
       <div class="knowledge-card-section">{{ form.prerequisite_cards.label_tag }}{{ form.prerequisite_cards }}{{ form.prerequisite_cards.errors }}<p class="field-help">可选。用于记录学习前置关系。</p></div>
       <div class="knowledge-card-section knowledge-card-section--wide">{{ form.questions.label_tag }}{{ form.questions }}{{ form.questions.errors }}<p class="field-help">可多选。关联题目后会在卡片详情页显示。</p></div>
     </section>
-    <div class="knowledge-card-form-footer"><button type="submit">保存卡片</button><a href="{% if form.instance.pk %}{% url 'knowledge-card-detail' form.instance.pk %}{% else %}{% url 'knowledge-card-list' %}{% endif %}">取消</a></div>
+    <div class="knowledge-card-form-footer"><button type="submit">保存卡片</button><a href="{% if is_edit %}{% url 'knowledge-card-detail' form.instance.pk %}{% else %}{% url 'knowledge-card-list' %}{% endif %}">取消</a></div>
   </form>
 </div>
 <script defer src="{% static 'question_bank/js/knowledge-card.js' %}"></script>

@@ -197,6 +197,7 @@ def _question_form_context(form, title, submitted_intent="", question=None, conf
     return {
         "form": form,
         "page_title": title,
+        "is_edit": bool(question and not question._state.adding),
         "submitted_intent": submitted_intent,
         "question": question,
         "question_version": build_question_version(question) if question and not question._state.adding else "",
@@ -444,7 +445,7 @@ def knowledge_card_create(request):
             card.prerequisite_cards.set(form.cleaned_data.get("prerequisite_cards", []))
             card.questions.set(form.cleaned_data.get("questions", []))
         return redirect("knowledge-card-detail", pk=card.pk)
-    return render(request, "question_bank/knowledge_card_form.html", {"form": form, "page_title": "新建知识卡片"})
+    return render(request, "question_bank/knowledge_card_form.html", {"form": form, "page_title": "新建知识卡片", "is_edit": False})
 
 
 @require_http_methods(["GET", "POST"])
@@ -457,7 +458,7 @@ def knowledge_card_edit(request, pk):
             card.prerequisite_cards.set(form.cleaned_data.get("prerequisite_cards", []))
             card.questions.set(form.cleaned_data.get("questions", []))
         return redirect("knowledge-card-detail", pk=card.pk)
-    return render(request, "question_bank/knowledge_card_form.html", {"form": form, "page_title": "编辑知识卡片"})
+    return render(request, "question_bank/knowledge_card_form.html", {"form": form, "page_title": "编辑知识卡片", "is_edit": True})
 
 
 def knowledge_card_list(request):
