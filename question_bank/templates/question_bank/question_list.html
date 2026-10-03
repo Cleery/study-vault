@@ -1,73 +1,250 @@
 {% extends "question_bank/base.html" %}
 {% block title %}题目检索 | 数学题库{% endblock %}
 {% block content %}
-<h1>题目检索</h1>
-<div class="question-index">
-  <aside aria-label="筛选条件">
-    <form method="get" id="question-filter-form">
-      <label for="question-query">关键词</label>
-      <input id="question-query" type="search" name="q" value="{{ query }}" placeholder="标题、题干、解法或错误记录">
-      <fieldset><legend>科目</legend>
-        {% for subject in subjects %}<label><input type="checkbox" name="subject" value="{{ subject.pk }}"{% if subject.pk|stringformat:'s' in selected_subjects %} checked{% endif %}> {{ subject.name }}</label>{% endfor %}
-      </fieldset>
-      <fieldset><legend>章节</legend>
-        {% for section in sections %}<label><input type="checkbox" name="section" value="{{ section.pk }}"{% if section.pk|stringformat:'s' in selected_sections %} checked{% endif %}> {{ section.name }}</label>{% endfor %}
-      </fieldset>
-      <fieldset><legend>标签</legend>
-        {% for tag in tags %}<label><input type="checkbox" name="tag" value="{{ tag.pk }}"{% if tag.pk|stringformat:'s' in selected_tags %} checked{% endif %}> {{ tag.name }}</label>{% endfor %}
-      </fieldset>
-      <fieldset><legend>掌握程度</legend>
-        {% for value,label in mastery_choices %}<label><input type="checkbox" name="mastery" value="{{ value }}"{% if value in selected_mastery %} checked{% endif %}> {{ label }}</label>{% endfor %}
-      </fieldset>
-      <label for="knowledge-card">知识卡片</label>
-      <select id="knowledge-card" name="knowledge_card" multiple>
-        {% for card in knowledge_cards %}<option value="{{ card.pk }}"{% if card.pk|stringformat:'s' in selected_cards %} selected{% endif %}>{{ card.name }}</option>{% endfor %}
-      </select>
-      <label><input type="checkbox" name="due" value="1"{% if request.GET.due %} checked{% endif %}> 仅显示到期题目</label>
-      <button type="submit">应用筛选</button>
-      <button type="button" id="save-filter">保存当前筛选</button>
-    </form>
-    <p><a href="{% url 'tag-manage' %}">管理标签</a></p>
-  </aside>
+<header class="search-heading">
+  <div>
+    <p class="eyebrow">题库</p>
+    <h1>题目检索</h1>
+  </div>
+  <p class="result-count">{{ paginator.count }} 道题目</p>
+</header>
 
-  <section aria-label="检索结果">
-    <div class="active-filters">
-      {% for item in active_filters %}<span class="filter-chip" aria-label="移除筛选条件：{{ item.label }}">{{ item.label }}</span>{% empty %}<span>当前没有筛选条件</span>{% endfor %}
+<section class="filter-panel" aria-labelledby="filter-heading">
+  <h2 id="filter-heading">筛选条件</h2>
+  <form method="get" action="{% url 'question-list' %}#question-results" id="question-filter-form">
+    <div class="filter-panel__search">
+      <label for="question-query">关键词</label>
+      <input id="question-query" type="search" name="q" value="{{ query }}" placeholder="搜索标题、题干、解法或错误记录">
     </div>
-    <p>共 {{ paginator.count }} 道题目</p>
-    <ul>
-      {% for question in questions %}
-        <li>
-          <article>
-            <h2><a href="{% url 'question-detail' question.pk %}">{{ question.title|default:"未命名题目" }}</a></h2>
-            {% if question.subject %}<p>{{ question.subject.name }}{% if question.section %} / {{ question.section.name }}{% endif %}</p>{% endif %}
-            {% if question.statement %}<p>{{ question.statement|striptags|truncatechars:180 }}</p>{% endif %}
-            <p>掌握程度：{{ question.get_mastery_display }}{% if question.next_review_at %} · 下次复习：{{ question.next_review_at|date:"Y-m-d H:i" }}{% endif %}</p>
-            <p>{% for tag in question.tags.all %}<span>{{ tag.name }}</span>{% empty %}无标签{% endfor %}</p>
-            {% for card in question.knowledge_cards.all %}<a href="{% url 'knowledge-card-detail' card.pk %}">查看知识卡片：{{ card.name }}</a>{% endfor %}
-          </article>
-        </li>
-      {% empty %}<li><p>没有匹配的题目。</p><a href="{% url 'question-create' %}">新建题目</a></li>{% endfor %}
-    </ul>
-    {% if page_obj.has_other_pages %}<nav aria-label="分页">
-      {% if page_obj.has_previous %}<a href="?{{ request.GET.urlencode }}&page={{ page_obj.previous_page_number }}">上一页</a>{% endif %}
+
+    <div class="filter-row">
+      <fieldset class="filter-group">
+        <legend>科目</legend>
+        <div class="filter-options">
+          {% for subject in subjects %}
+            <label class="filter-option"><input type="checkbox" name="subject" value="{{ subject.pk }}"{% if subject.pk|stringformat:'s' in selected_subjects %} checked{% endif %}><span>{{ subject.name }}</span></label>
+          {% empty %}<span class="filter-empty">暂无科目</span>{% endfor %}
+        </div>
+      </fieldset>
+
+      <fieldset class="filter-group">
+        <legend>章节</legend>
+        <div class="filter-options">
+          {% for section in sections %}
+            <label class="filter-option"><input type="checkbox" name="section" value="{{ section.pk }}"{% if section.pk|stringformat:'s' in selected_sections %} checked{% endif %}><span>{{ section.name }}</span></label>
+          {% empty %}<span class="filter-empty">暂无章节</span>{% endfor %}
+        </div>
+      </fieldset>
+    </div>
+
+    <div class="filter-row">
+      <div class="tag-picker" data-tag-picker data-selected-tags="{{ selected_tags|join:',' }}" data-common-tags="{% for item in tag_picker.common %}{{ item.canonical_id }}{% if not forloop.last %},{% endif %}{% endfor %}" data-tag-suggestions-url="{% url 'tag-suggestions' %}">
+        <fieldset class="tag-picker__selected">
+          <legend>已选标签</legend>
+          <div class="tag-picker__options">
+            {% for item in tag_picker.selected %}
+              <label class="tag-picker__option tag-picker__option--selected" for="tag-selected-{{ item.canonical_id }}">
+                <input id="tag-selected-{{ item.canonical_id }}" type="checkbox" name="tag" value="{{ item.canonical_id }}" checked>
+                <span class="tag-picker__chip">{{ item.name }}</span>
+                <span class="tag-picker__count" data-tag-count="{{ item.count }}" aria-label="{{ item.count }} 道题目">{{ item.count }}</span>
+              </label>
+            {% empty %}<span class="filter-empty">暂无已选标签</span>{% endfor %}
+          </div>
+        </fieldset>
+
+        <div class="tag-picker__search">
+          <label for="tag-picker-q">按前缀查找标签</label>
+          <div class="tag-picker__search-row">
+            <input id="tag-picker-q" type="search" name="tag_picker_q" value="{{ tag_picker.query }}" placeholder="输入标签前缀">
+            <button class="tag-picker__search-submit" type="submit">搜索标签</button>
+          </div>
+          <span id="tag-picker-search-status" class="tag-picker__search-status" role="status" aria-live="polite">{% if tag_picker.query %}找到 {{ tag_picker.search|length }} 个标签{% endif %}</span>
+          {% if not tag_picker.query %}<a class="tag-picker__manage" href="{% url 'tag-manage' %}">管理标签</a>{% endif %}
+          {% if tag_picker.query %}
+            <div class="tag-picker__search-results" aria-label="标签搜索结果">
+              {% for item in tag_picker.search %}
+                <label class="tag-picker__option" for="tag-search-{{ item.canonical_id }}" style="--tag-depth: {{ item.depth }}">
+                  <input id="tag-search-{{ item.canonical_id }}" type="checkbox" name="tag" value="{{ item.canonical_id }}">
+                  <span>{{ item.name }}</span>
+                  <span class="tag-picker__count" data-tag-count="{{ item.count }}" aria-label="{{ item.count }} 道题目">{{ item.count }}</span>
+                </label>
+              {% empty %}<span class="filter-empty">没有匹配的标签</span>{% endfor %}
+            </div>
+          {% endif %}
+        </div>
+
+        <fieldset class="tag-picker__common">
+          <legend>常用标签</legend>
+          <div class="tag-picker__options">
+            {% for item in tag_picker.common %}
+              <label class="tag-picker__option" for="tag-common-{{ item.canonical_id }}" style="--tag-depth: {{ item.depth }}">
+                <input id="tag-common-{{ item.canonical_id }}" type="checkbox" name="tag" value="{{ item.canonical_id }}">
+                <span>{{ item.name }}</span>
+                <span class="tag-picker__count" data-tag-count="{{ item.count }}" aria-label="{{ item.count }} 道题目">{{ item.count }}</span>
+              </label>
+            {% empty %}<span class="filter-empty">暂无常用标签</span>{% endfor %}
+          </div>
+        </fieldset>
+
+        <div class="tag-picker__categories" data-tag-category-list>
+          {% for category in tag_picker.categories %}
+            {% if category.id != 'other' %}
+              <details class="tag-picker__category" data-tag-category="{{ category.id }}"{% if request.GET.tag_picker_group == category.id|stringformat:'s' %} open{% endif %}>
+                <summary data-category-expand aria-expanded="{% if request.GET.tag_picker_group == category.id|stringformat:'s' %}true{% else %}false{% endif %}" aria-controls="tag-category-panel-{{ category.id }}">
+                  <span>{{ category.name }}</span>
+                  <span class="tag-picker__count" data-tag-count="{{ category.count }}" aria-label="{{ category.count }} 道题目">{{ category.count }}</span>
+                </summary>
+                <div id="tag-category-panel-{{ category.id }}" class="tag-picker__category-panel" data-tag-category-panel data-tag-category="{{ category.id }}">
+                  <label class="tag-picker__option tag-picker__option--all" for="tag-category-all-{{ category.id }}">
+                    <input id="tag-category-all-{{ category.id }}" type="checkbox" name="tag" value="{{ category.all_item.canonical_id }}"{% if category.all_item.canonical_id in selected_tags %} checked{% endif %}>
+                    <span>{{ category.all_item.name }}</span>
+                    <span class="tag-picker__count" data-tag-count="{{ category.all_item.count }}" aria-label="{{ category.all_item.count }} 道题目">{{ category.all_item.count }}</span>
+                  </label>
+                  {% for item in category.items %}
+                    <label class="tag-picker__option" for="tag-category-{{ item.canonical_id }}" style="--tag-depth: {{ item.depth }}">
+                      <input id="tag-category-{{ item.canonical_id }}" type="checkbox" name="tag" value="{{ item.canonical_id }}">
+                      <span>{{ item.name }}</span>
+                      <span class="tag-picker__count" data-tag-count="{{ item.count }}" aria-label="{{ item.count }} 道题目">{{ item.count }}</span>
+                    </label>
+                  {% endfor %}
+                  {% if category.has_next or category.page > 1 %}
+                    <nav class="tag-picker__pagination" aria-label="{{ category.name }} 标签分页">
+                      {% if category.page > 1 %}<a href="?{% if pagination_query %}{{ pagination_query }}&amp;{% endif %}tag_picker_group={{ category.id }}&amp;tag_picker_page={{ category.page|add:'-1' }}">上一页</a>{% endif %}
+                      <span>第 {{ category.page }} 页</span>
+                      {% if category.has_next %}<a href="?{% if pagination_query %}{{ pagination_query }}&amp;{% endif %}tag_picker_group={{ category.id }}&amp;tag_picker_page={{ category.page|add:'1' }}">下一页</a>{% endif %}
+                    </nav>
+                  {% endif %}
+                </div>
+              </details>
+            {% endif %}
+          {% endfor %}
+          {% for category in tag_picker.categories %}
+            {% if category.id == 'other' %}
+              <details class="tag-picker__category tag-picker__category--other" data-tag-category="other"{% if request.GET.tag_picker_group == 'other' %} open{% endif %}>
+                <summary data-category-expand aria-expanded="{% if request.GET.tag_picker_group == 'other' %}true{% else %}false{% endif %}" aria-controls="tag-category-panel-other">
+                  <span>{{ category.name }}</span>
+                  <span class="tag-picker__count" data-tag-count="{{ category.count }}" aria-label="{{ category.count }} 道题目">{{ category.count }}</span>
+                </summary>
+                <div id="tag-category-panel-other" class="tag-picker__category-panel" data-tag-category-panel data-tag-category="other">
+                  {% for item in category.items %}
+                    <label class="tag-picker__option" for="tag-other-{{ item.canonical_id }}" style="--tag-depth: {{ item.depth }}">
+                      <input id="tag-other-{{ item.canonical_id }}" type="checkbox" name="tag" value="{{ item.canonical_id }}">
+                      <span>{{ item.name }}</span>
+                      <span class="tag-picker__count" data-tag-count="{{ item.count }}" aria-label="{{ item.count }} 道题目">{{ item.count }}</span>
+                    </label>
+                  {% endfor %}
+                  {% if category.has_next or category.page > 1 %}
+                    <nav class="tag-picker__pagination" aria-label="Other 标签分页">
+                      {% if category.page > 1 %}<a href="?{% if pagination_query %}{{ pagination_query }}&amp;{% endif %}tag_picker_group=other&amp;tag_picker_page={{ category.page|add:'-1' }}">上一页</a>{% endif %}
+                      <span>第 {{ category.page }} 页</span>
+                      {% if category.has_next %}<a href="?{% if pagination_query %}{{ pagination_query }}&amp;{% endif %}tag_picker_group=other&amp;tag_picker_page={{ category.page|add:'1' }}">下一页</a>{% endif %}
+                    </nav>
+                  {% endif %}
+                </div>
+              </details>
+            {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+
+      <fieldset class="filter-group">
+        <legend>知识卡片</legend>
+        <div class="filter-options">
+          {% for card in knowledge_cards %}
+            <label class="filter-option"><input type="checkbox" name="knowledge_card" value="{{ card.pk }}"{% if card.pk|stringformat:'s' in selected_cards %} checked{% endif %}><span>{{ card.name }}</span></label>
+          {% empty %}<span class="filter-empty">暂无知识卡片</span>{% endfor %}
+        </div>
+      </fieldset>
+    </div>
+
+    <div class="filter-row filter-row--compact">
+      <fieldset class="filter-group">
+        <legend>掌握程度</legend>
+        <div class="filter-options">
+          {% for value, label in mastery_choices %}
+            <label class="filter-option"><input type="checkbox" name="mastery" value="{{ value }}"{% if value in selected_mastery %} checked{% endif %}><span>{{ label }}</span></label>
+          {% endfor %}
+        </div>
+      </fieldset>
+
+      <fieldset class="filter-group">
+        <legend>复习状态</legend>
+        <div class="filter-options">
+          <label class="filter-option"><input type="checkbox" name="due" value="1"{% if selected_due %} checked{% endif %}><span>仅显示到期题目</span></label>
+        </div>
+      </fieldset>
+    </div>
+
+    <div class="filter-panel__actions">
+      <button type="submit">应用筛选</button>
+      <button type="button" id="save-filter" aria-describedby="save-filter-status">保存当前筛选</button>
+      <span id="save-filter-status" class="save-filter-status" role="status" aria-live="polite"></span>
+      <a href="{% url 'question-list' %}" data-clear-filters>清空条件</a>
+      <a href="{% url 'tag-manage' %}">管理标签</a>
+    </div>
+  </form>
+</section>
+
+<section id="question-results" class="question-results" aria-labelledby="results-heading">
+  <div class="results-toolbar">
+    <h2 id="results-heading">检索结果</h2>
+    <div class="active-filters" aria-label="当前筛选条件">
+      {% for item in active_filters %}
+        <button class="filter-chip" type="button" data-filter-key="{{ item.key }}" data-filter-aliases="{{ item.aliases }}" data-filter-value="{{ item.value }}" aria-label="移除筛选条件：{{ item.label }}">{{ item.label }}</button>
+      {% empty %}<span class="active-filters__empty">当前没有筛选条件</span>{% endfor %}
+    </div>
+  </div>
+
+  <div class="question-result-list">
+    {% for question in questions %}
+      <article class="question-result-card">
+        <header class="question-result-card__header">
+          <div>
+            <p class="question-meta">
+              {% if question.subject %}<span>{{ question.subject.name }}</span>{% endif %}
+              {% if question.section %}<span>{{ question.section.name }}</span>{% endif %}
+              <span>{{ question.get_mastery_display }}</span>
+            </p>
+            <h3><a href="{% url 'question-detail' question.pk %}">{{ question.title|default:"未命名题目" }}</a></h3>
+          </div>
+          {% if question.next_review_at %}<time datetime="{{ question.next_review_at|date:'c' }}">下次复习 {{ question.next_review_at|date:"Y-m-d H:i" }}</time>{% endif %}
+        </header>
+
+        {% if question.statement %}<div class="question-statement">{{ question.statement_html|safe }}</div>{% endif %}
+
+        {% if question.image_attachments %}
+          <div class="question-attachments">
+            {% for attachment in question.image_attachments %}
+              <img src="{{ attachment.file.url }}" alt="{{ question.title|default:'题目' }}附件 {{ forloop.counter }}" loading="lazy" decoding="async">
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        <div class="question-result-card__footer">
+          <div class="question-taxonomy">
+            {% for tag in question.tags.all %}<span class="tag-chip">{{ tag.name }}</span>{% endfor %}
+            {% for card in question.knowledge_cards.all %}<a class="knowledge-link" href="{% url 'knowledge-card-detail' card.pk %}">{{ card.name }}</a>{% endfor %}
+          </div>
+          <div class="question-actions">
+            <a href="{% url 'question-detail' question.pk %}">查看详情</a>
+            <a class="button" href="{% url 'review-detail' question.pk %}">开始复习</a>
+          </div>
+        </div>
+      </article>
+    {% empty %}
+      <div class="empty-results">
+        <p>没有匹配的题目。</p>
+        <a class="button" href="{% url 'question-create' %}">新建题目</a>
+      </div>
+    {% endfor %}
+  </div>
+
+  {% if page_obj.has_other_pages %}
+    <nav class="pagination" aria-label="分页">
+      {% if page_obj.has_previous %}<a href="?{% if pagination_query %}{{ pagination_query }}&amp;{% endif %}page={{ page_obj.previous_page_number }}#question-results">上一页</a>{% endif %}
       <span>第 {{ page_obj.number }} / {{ page_obj.paginator.num_pages }} 页</span>
-      {% if page_obj.has_next %}<a href="?{{ request.GET.urlencode }}&page={{ page_obj.next_page_number }}">下一页</a>{% endif %}
-    </nav>{% endif %}
-  </section>
-</div>
-<script>
-(() => {
-  const key = "math-question-bank:saved-filters";
-  const button = document.getElementById("save-filter");
-  if (!button) return;
-  button.addEventListener("click", () => {
-    const params = new URLSearchParams(new FormData(document.getElementById("question-filter-form")));
-    const saved = JSON.parse(localStorage.getItem(key) || "[]");
-    saved.push({name: new Date().toLocaleString(), query: params.toString(), updated_at: new Date().toISOString()});
-    localStorage.setItem(key, JSON.stringify(saved.slice(-20)));
-    button.textContent = "已保存";
-  });
-})();
-</script>
+      {% if page_obj.has_next %}<a href="?{% if pagination_query %}{{ pagination_query }}&amp;{% endif %}page={{ page_obj.next_page_number }}#question-results">下一页</a>{% endif %}
+    </nav>
+  {% endif %}
+</section>
 {% endblock %}

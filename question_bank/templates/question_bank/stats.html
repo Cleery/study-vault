@@ -1,15 +1,51 @@
 {% extends "question_bank/base.html" %}
+{% load static %}
 {% block title %}统计 | 数学题库{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'question_bank/css/stats-workbench.css' %}">{% endblock %}
 {% block content %}
-<h1>学习统计</h1>
-<dl>
-  <dt>题目总数</dt><dd>{{ stats.question_total }}</dd>
-  <dt>近30天复习次数</dt><dd>{{ stats.reviews_last_30_days }}</dd>
-  <dt>近30天错误结果次数</dt><dd>{{ stats.errors_last_30_days }}</dd>
-  <dt>待复习题数</dt><dd>{{ stats.due_questions }}</dd>
-</dl>
-<h2>各科目题数</h2>
-<ul>{% for name, count in stats.questions_by_subject.items %}<li>{{ name }}: {{ count }}</li>{% empty %}<li>暂无数据</li>{% endfor %}</ul>
-<h2>各掌握程度题数</h2>
-<ul>{% for name, count in stats.questions_by_mastery.items %}<li>{{ name }}: {{ count }}</li>{% endfor %}</ul>
+<div class="stats-workbench">
+  <header class="stats-workbench__heading">
+    <div>
+      <p class="stats-workbench__eyebrow">学习概览</p>
+      <h1>学习统计</h1>
+      <p>查看题目积累与最近 30 天的复习情况。</p>
+    </div>
+    <a class="stats-workbench__action" href="{% url 'question-list' %}">查看题目</a>
+  </header>
+
+  <section class="stats-workbench__metrics" aria-label="核心统计指标">
+    <dl class="stats-workbench__metric"><dt>题目总数</dt><dd data-metric="question_total">{{ stats.question_total }}</dd></dl>
+    <dl class="stats-workbench__metric"><dt>待复习题数</dt><dd data-metric="due_questions">{{ stats.due_questions }}</dd></dl>
+    <dl class="stats-workbench__metric"><dt>近 30 天复习次数</dt><dd data-metric="reviews_last_30_days">{{ stats.reviews_last_30_days }}</dd></dl>
+    <dl class="stats-workbench__metric"><dt>近 30 天错误次数</dt><dd data-metric="errors_last_30_days">{{ stats.errors_last_30_days }}</dd></dl>
+  </section>
+
+  <div class="stats-workbench__summaries">
+    <section class="stats-workbench__summary" aria-labelledby="stats-subjects-heading">
+      <header><h2 id="stats-subjects-heading">各科目题数</h2><p>按题目所属科目汇总</p></header>
+      {% if stats.questions_by_subject %}
+      <ul class="stats-workbench__rows">
+        {% for name, count in stats.questions_by_subject.items %}
+        <li><span>{{ name }}</span><strong>{{ count }}</strong></li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <div class="stats-workbench__empty"><p>暂无数据</p><a href="{% url 'question-create' %}">新建第一道题目</a></div>
+      {% endif %}
+    </section>
+
+    <section class="stats-workbench__summary" aria-labelledby="stats-mastery-heading">
+      <header><h2 id="stats-mastery-heading">各掌握程度题数</h2><p>包含当前统计范围内的题目</p></header>
+      {% if stats.question_total %}
+      <ul class="stats-workbench__rows">
+        {% for row in mastery_rows %}
+        <li><span>{{ row.label }}</span><strong>{{ row.count }}</strong></li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <div class="stats-workbench__empty"><p>暂无数据</p><span>记录题目后可查看掌握程度分布。</span></div>
+      {% endif %}
+    </section>
+  </div>
+</div>
 {% endblock %}

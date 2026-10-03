@@ -92,7 +92,10 @@ def test_statistics_counts_subject_mastery_reviews_errors_and_due(subject, secti
 
 @pytest.mark.django_db
 def test_export_import_round_trip_preserves_relationships_and_attachments(tmp_path, subject, section):
-    card = KnowledgeCard.objects.create(name="极限定义", subject=subject, section=section, type="definition")
+    card = KnowledgeCard.objects.create(
+        name="极限定义", subject=subject, section=section, type="definition",
+        core_content="## 自定义结构\n\n$\\varepsilon$ 定义",
+    )
     tag = Tag.objects.create(name="证明")
     question = make_question(subject, "导出题", section=section)
     question.tags.add(tag)
@@ -125,6 +128,7 @@ def test_export_import_round_trip_preserves_relationships_and_attachments(tmp_pa
     assert imported.section.name == "极限"
     assert imported.tags.get().name == "证明"
     assert imported.knowledge_cards.get().name == "极限定义"
+    assert imported.knowledge_cards.get().core_content == "## 自定义结构\n\n$\\varepsilon$ 定义"
     assert imported.attachments.count() == 1
     assert imported.attachments.get().file.read() == png_bytes()
     assert imported.review_records.count() == 1
@@ -267,6 +271,34 @@ def test_stats_page_is_accessible_and_due_includes_later_today(client, subject):
     response = client.get("/stats/")
     assert response.status_code == 200
     assert response.context["stats"]["due_questions"] == 1
+
+
+@pytest.mark.django_db
+def test_stats_workbench_metric_values_match_existing_statistics(client, subject):
+    now = timezone.now()
+    question = make_question(
+        subject, "统计指标题", mastery="unstable", next_review_at=now - timedelta(days=1)
+    )
+    ReviewRecord.objects.create(
+        question=question,
+        reviewed_at=now - timedelta(days=1),
+        result="not_done",
+        mastery_before="unstable",
+        mastery_after="struggling",
+    )
+
+    response = client.get("/stats/")
+    body = response.content.decode()
+    stats = response.context["stats"]
+
+    assert stats["question_total"] == 1
+    assert stats["due_questions"] == 1
+    assert stats["reviews_last_30_days"] == 1
+    assert stats["errors_last_30_days"] == 1
+    for key in (
+        "question_total", "due_questions", "reviews_last_30_days", "errors_last_30_days"
+    ):
+        assert f'data-metric="{key}">{stats[key]}<' in body
 
 
 def test_backup_command_fails_when_encryption_key_is_missing(monkeypatch, tmp_path):

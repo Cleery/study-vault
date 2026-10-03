@@ -1,29 +1,64 @@
 {% extends "question_bank/base.html" %}
-{% block title %}复习队列 | 数学题库{% endblock %}
+{% load static %}
+{% block title %}待复习 | 数学题库{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'question_bank/css/review-workbench.css' %}">{% endblock %}
 {% block content %}
-<h1>复习队列</h1>
-<nav aria-label="复习队列">
-  <a href="?queue=due{% if selected_card %}&amp;knowledge_card={{ selected_card }}{% endif %}">今日到期（{{ due_questions|length }}）</a>
-  <a href="?queue=recent{% if selected_card %}&amp;knowledge_card={{ selected_card }}{% endif %}">最近错误（{{ recent_mistakes|length }}）</a>
-  <a href="?queue=overdue{% if selected_card %}&amp;knowledge_card={{ selected_card }}{% endif %}">逾期（{{ overdue_questions|length }}）</a>
-</nav>
-<form method="get">
-  <input type="hidden" name="queue" value="{{ queue }}">
-  <label>知识卡片
-    <select name="knowledge_card">
-      <option value="">全部</option>
-      {% for card in knowledge_cards %}<option value="{{ card.pk }}"{% if selected_card == card.pk|stringformat:'s' %} selected{% endif %}>{{ card.name }}</option>{% endfor %}
-    </select>
-  </label>
-  <button type="submit">筛选</button>
-</form>
-<ol>
-  {% for question in questions %}
-    <li>
-      <a href="{% url 'review-detail' question.pk %}">{{ question.title|default:"未命名题目" }}</a>
-      {% if question.subject %}<span>{{ question.subject.name }}</span>{% endif %}
-      {% if question.next_review_at %}<time datetime="{{ question.next_review_at|date:'c' }}">{{ question.next_review_at|date:"Y-m-d H:i" }}</time>{% endif %}
-    </li>
-  {% empty %}<li>当前队列没有题目。</li>{% endfor %}
-</ol>
+<div class="review-workbench">
+  <header class="review-workbench__heading">
+    <div>
+      <p class="review-workbench__eyebrow">复习工作台</p>
+      <h1>待复习</h1>
+      <p>按到期时间和最近错误记录安排下一道题。</p>
+    </div>
+    <a class="review-workbench__browse" href="{% url 'question-list' %}">浏览全部题目</a>
+  </header>
+
+  <nav class="review-workbench__queues" aria-label="复习队列">
+    {% for tab in queue_tabs %}
+      <a class="review-workbench__queue{% if tab.is_current %} review-workbench__queue--current{% endif %}" href="?queue={{ tab.key }}{% if selected_card %}&amp;knowledge_card={{ selected_card }}{% endif %}"{% if tab.is_current %} aria-current="page"{% endif %}>
+        <span>{{ tab.title }}</span><strong>{{ tab.count }}</strong>
+      </a>
+    {% endfor %}
+  </nav>
+
+  <section class="review-workbench__panel" aria-label="复习题目">
+    <div class="review-workbench__toolbar">
+      <div>
+        {% for tab in queue_tabs %}{% if tab.is_current %}<h2>{{ tab.title }}</h2>{% endif %}{% endfor %}
+        <p>共 {{ questions|length }} 道题</p>
+      </div>
+      <form class="review-workbench__filter" method="get">
+        <input type="hidden" name="queue" value="{{ queue }}">
+        <label for="review-knowledge-card">知识卡片</label>
+        <select id="review-knowledge-card" name="knowledge_card">
+          <option value="">全部知识卡片</option>
+          {% for card in knowledge_cards %}<option value="{{ card.pk }}"{% if selected_card == card.pk|stringformat:'s' %} selected{% endif %}>{{ card.name }}</option>{% endfor %}
+        </select>
+        <button type="submit">筛选</button>
+        {% if selected_card %}<a href="?queue={{ queue }}" class="review-workbench__clear">清除筛选</a>{% endif %}
+      </form>
+    </div>
+
+    <ol class="review-workbench__questions">
+      {% for question in questions %}
+        <li class="review-workbench__question">
+          <div class="review-workbench__question-copy">
+            <h3>{{ question.title|default:"未命名题目" }}</h3>
+            <div class="review-workbench__meta">
+              {% if question.subject %}<span>{{ question.subject.name }}</span>{% endif %}
+              {% if question.next_review_at %}<span>下次复习 <time datetime="{{ question.next_review_at|date:'c' }}">{{ question.next_review_at|date:"Y-m-d H:i" }}</time></span>{% endif %}
+            </div>
+          </div>
+          <a class="review-workbench__start" href="{% url 'review-detail' question.pk %}" aria-label="开始复习：{{ question.title|default:'未命名题目' }}">开始复习</a>
+        </li>
+      {% empty %}
+        <li class="review-workbench__empty">
+          <h3>当前队列没有题目</h3>
+          <p>可以查看其他队列，或返回题目检索继续学习。</p>
+          <a href="{% url 'question-list' %}">返回题目检索</a>
+        </li>
+      {% endfor %}
+    </ol>
+  </section>
+</div>
 {% endblock %}

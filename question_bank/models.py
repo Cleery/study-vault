@@ -1,13 +1,17 @@
+import logging
 import uuid
 from pathlib import Path
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import Q
-from django.db.models.signals import m2m_changed, post_delete, pre_save
+from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 from django.dispatch import receiver
 from django.utils import timezone
 from django.utils.text import slugify
+
+
+logger = logging.getLogger(__name__)
 
 
 class TimeStampedModel(models.Model):
@@ -172,16 +176,17 @@ class QuestionAttachment(TimeStampedModel):
         return self.file.name
 
 
-def _delete_attachment_file_when_unreferenced(storage, name, *, excluding_pk=None):
+def _delete_attachment_file_when_unreferenced(storage, name):
     if not name:
         return
 
     def cleanup():
-        references = QuestionAttachment.objects.filter(file=name)
-        if excluding_pk is not None:
-            references = references.exclude(pk=excluding_pk)
-        if not references.exists():
-            storage.delete(name)
+        try:
+            references = QuestionAttachment.objects.filter(file=name)
+            if not references.exists():
+                storage.delete(name)
+        except Exception:
+            logger.exception("Failed to delete attachment file %s", name)
 
     transaction.on_commit(cleanup)
 
@@ -193,16 +198,21 @@ def cleanup_deleted_attachment_file(sender, instance, **kwargs):
 
 
 @receiver(pre_save, sender=QuestionAttachment)
-def cleanup_replaced_attachment_file(sender, instance, **kwargs):
-    if not instance.pk:
+def remember_replaced_attachment_file(sender, instance, update_fields=None, **kwargs):
+    instance._previous_attachment_file = None
+    if not instance.pk or (update_fields is not None and "file" not in update_fields):
         return
     previous = sender.objects.filter(pk=instance.pk).only("file").first()
     if previous and previous.file and previous.file.name != instance.file.name:
-        _delete_attachment_file_when_unreferenced(
-            previous.file.storage,
-            previous.file.name,
-            excluding_pk=instance.pk,
-        )
+        instance._previous_attachment_file = (previous.file.storage, previous.file.name)
+
+
+@receiver(post_save, sender=QuestionAttachment)
+def cleanup_replaced_attachment_file(sender, instance, **kwargs):
+    previous = getattr(instance, "_previous_attachment_file", None)
+    if previous:
+        _delete_attachment_file_when_unreferenced(*previous)
+        instance._previous_attachment_file = None
 
 
 class KnowledgeCard(TimeStampedModel):
@@ -225,7 +235,8 @@ class KnowledgeCard(TimeStampedModel):
         null=True,
         blank=True,
     )
-    type = models.CharField(max_length=20, choices=CARD_TYPE_CHOICES)
+    type = models.CharField(max_length=50)
+    core_content = models.TextField(blank=True)
     formal_statement = models.TextField(blank=True)
     conditions = models.TextField(blank=True)
     proof = models.TextField(blank=True)
@@ -260,6 +271,10 @@ class KnowledgeCard(TimeStampedModel):
     @card_type.setter
     def card_type(self, value):
         self.type = value
+
+    def get_type_display(self):
+        labels = dict(self.CARD_TYPE_CHOICES)
+        return labels.get(self.type, self.type)
 
     def clean(self):
         errors = {}
@@ -398,6 +413,10 @@ class Tag(TimeStampedModel):
             models.Index(fields=["parent", "name"]),
             models.Index(fields=["kind", "archived"]),
             models.Index(fields=["redirect_to"]),
+            models.Index(
+                fields=["archived", "redirect_to", "name"],
+                name="tag_picker_prefix_idx",
+            ),
         ]
 
     def clean(self):
@@ -408,6 +427,13 @@ class Tag(TimeStampedModel):
             errors["redirect_to"] = "标签不能重定向到自身。"
         if self.parent_id == self.pk:
             errors["parent"] = "标签不能将自身设为父级。"
+        if (
+            self.parent_id
+            and self.pk
+            and self.parent_id != self.pk
+            and _tag_parent_reaches(self.parent_id, self.pk)
+        ):
+            errors["parent"] = "父级不能形成环。"
         if self.redirect_to_id and self.pk and _tag_redirect_reaches(self.redirect_to_id, self.pk):
             errors["redirect_to"] = "标签重定向不能形成环。"
         if errors:
@@ -438,6 +464,34 @@ def _tag_redirect_reaches(start_id, target_id, seen=None):
     seen.add(start_id)
     next_id = Tag.objects.filter(pk=start_id).values_list("redirect_to_id", flat=True).first()
     return bool(next_id and _tag_redirect_reaches(next_id, target_id, seen))
+
+
+def _tag_parent_reaches(start_id, target_id):
+    """Return whether a prospective parent chain reaches the edited tag."""
+    visited = set()
+    current_id = start_id
+    while current_id and current_id not in visited:
+        if current_id == target_id:
+            return True
+        visited.add(current_id)
+        current_id = Tag.objects.filter(pk=current_id).values_list("parent_id", flat=True).first()
+    return False
+
+
+def schedule_tag_picker_cache_invalidation():
+    from .search import invalidate_tag_picker_cache
+
+    transaction.on_commit(invalidate_tag_picker_cache)
+
+
+@receiver(post_save, sender=Tag)
+def invalidate_tag_picker_cache_after_tag_save(sender, instance, **kwargs):
+    schedule_tag_picker_cache_invalidation()
+
+
+@receiver(post_delete, sender=Tag)
+def invalidate_tag_picker_cache_after_tag_delete(sender, instance, **kwargs):
+    schedule_tag_picker_cache_invalidation()
 
 
 class ReviewRecord(TimeStampedModel):

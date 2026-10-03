@@ -1,26 +1,55 @@
 {% extends "question_bank/base.html" %}
+{% load static %}
 {% block title %}标签管理 | 数学题库{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'question_bank/css/tag-workbench.css' %}">{% endblock %}
 {% block content %}
-<h1>标签管理</h1>
-<form method="post">
-  {% csrf_token %}
-  {{ form.non_field_errors }}
-  {% for field in form %}<div>{{ field.label_tag }}{{ field }}{{ field.errors }}</div>{% endfor %}
-  <button type="submit">保存标签</button>
-  {% if editing_tag %}<a href="{% url 'tag-manage' %}">取消编辑</a>{% endif %}
-</form>
-<h2>已有标签</h2>
-<ul>
-  {% for tag in tags %}
-    <li>
-      {{ tag.name }}{% if tag.parent %}（父级：{{ tag.parent.name }}）{% endif %}{% if tag.archived %} [已归档]{% endif %}
-      <a href="{% url 'tag-edit' tag.pk %}">编辑</a>
-      <form method="post" action="{% url 'tag-archive' tag.pk %}" style="display:inline">{% csrf_token %}<button type="submit">归档</button></form>
-      <form method="post" action="{% url 'tag-merge' tag.pk %}" style="display:inline">
-        {% csrf_token %}<label><span class="sr-only">合并到</span><select name="target">{% for target in tags %}{% if target.pk != tag.pk %}<option value="{{ target.pk }}">{{ target.name }}</option>{% endif %}{% endfor %}</select></label>
-        <button type="submit">合并</button>
+<div class="tag-workbench">
+  {% if messages %}<div class="tag-workbench__notices" role="status">{% for message in messages %}<p>{{ message }}</p>{% endfor %}</div>{% endif %}
+  <header class="tag-workbench__heading">
+    <div><p class="tag-workbench__eyebrow">TAG WORKBENCH</p><h1>标签管理</h1><p>按类型整理标签，查看详情并维护名称与父级。</p></div>
+    <a class="tag-workbench__primary" href="{% url 'tag-create' %}{% if state_query %}?{{ state_query }}{% endif %}">新建标签</a>
+  </header>
+
+  <form class="tag-workbench__search" method="get" action="{% url 'tag-manage' %}">
+    <label for="tag-workbench-query">搜索标签名称</label>
+    <div class="tag-workbench__search-controls">
+      <input id="tag-workbench-query" type="search" name="q" value="{{ tag_query }}" maxlength="100" placeholder="输入标签名称">
+      {% if selected_kind %}<input type="hidden" name="kind" value="{{ selected_kind }}">{% endif %}
+      {% if show_archived %}<input type="hidden" name="show_archived" value="1">{% endif %}
+      <button type="submit">搜索</button>
+    </div>
+    <a class="tag-workbench__archive-toggle" href="?{{ archive_query }}">{% if show_archived %}隐藏已归档标签{% else %}包含已归档标签{% endif %}</a>
+  </form>
+
+  <div class="tag-workbench__layout">
+    <nav class="tag-workbench__categories" aria-label="标签分类">
+      <h2>分类</h2>
+      <ul>{% for category in tag_categories %}
+        <li><a href="?{{ category.query }}"{% if category.kind == selected_kind %} aria-current="page"{% endif %}><span>{{ category.label }}</span><strong>{{ category.count }}</strong></a></li>
+      {% endfor %}</ul>
+    </nav>
+
+    <section class="tag-workbench__list" aria-labelledby="tag-workbench-list-title">
+      <div class="tag-workbench__section-head"><h2 id="tag-workbench-list-title">标签列表</h2><span>{{ tags|length }} 个标签</span></div>
+      <ul>{% for tag in tags %}
+        <li><a href="?{% if state_query %}{{ state_query }}&amp;{% endif %}selected={{ tag.pk }}"{% if selected_tag.pk == tag.pk %} aria-current="true"{% endif %}>
+          <span class="tag-workbench__tag-name">{{ tag.name }}</span>
+          <small>{{ tag.get_kind_display }}{% if tag.parent %} · 父级：{{ tag.parent.name }}{% endif %}{% if tag.archived %} · 已归档{% endif %}</small>
+        </a></li>
+      {% empty %}<li class="tag-workbench__empty">当前条件下暂无标签。<a href="{% url 'tag-create' %}">新建标签</a></li>{% endfor %}</ul>
+    </section>
+
+    <section class="tag-workbench__details" aria-labelledby="tag-workbench-detail-title">
+      <div class="tag-workbench__section-head"><h2 id="tag-workbench-detail-title">{% if selected_tag %}标签详情{% else %}新建标签{% endif %}</h2></div>
+      {% if selected_tag %}<div class="tag-workbench__summary"><strong>{{ selected_tag.name }}</strong><span>{{ selected_tag.get_kind_display }}{% if selected_tag.archived %} · 已归档{% endif %}</span>{% if selected_tag.parent %}<span>父级：{{ selected_tag.parent.name }}</span>{% endif %}</div>{% endif %}
+      <form class="tag-workbench__form" method="post" action="{% if form_target_tag %}{% url 'tag-edit' form_target_tag.pk %}{% else %}{% url 'tag-manage' %}{% endif %}{% if state_query %}?{{ state_query }}{% endif %}">
+        {% csrf_token %}
+        {{ form.non_field_errors }}
+        {% for field in form %}<div class="tag-workbench__field">{{ field.label_tag }}{{ field }}{{ field.errors }}{% if field.name == 'parent' %}<small>可选。用于将标签放入现有父级之下。</small>{% endif %}</div>{% endfor %}
+        <div class="tag-workbench__form-actions"><button type="submit">保存标签</button>{% if selected_tag %}<a href="{% url 'tag-create' %}{% if state_query %}?{{ state_query }}{% endif %}">取消编辑</a>{% endif %}</div>
       </form>
-    </li>
-  {% empty %}<li>暂无标签。</li>{% endfor %}
-</ul>
+      {% if selected_tag %}<div class="tag-workbench__more"><h3>更多操作</h3><p><a href="{% url 'tag-archive-confirm' selected_tag.pk %}{% if state_query %}?{{ state_query }}{% endif %}">归档标签</a> · <a href="{% url 'tag-merge-confirm' selected_tag.pk %}{% if state_query %}?{{ state_query }}{% endif %}">合并标签</a></p></div>{% endif %}
+    </section>
+  </div>
+</div>
 {% endblock %}

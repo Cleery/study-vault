@@ -1,19 +1,187 @@
 {% extends "question_bank/base.html" %}
+{% load static %}
 {% block title %}{{ page_title }} | 数学题库{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'question_bank/css/question-form.css' %}">{% endblock %}
 {% block content %}
-<h1>{{ page_title }}</h1>
-<form method="post" enctype="multipart/form-data">
+<header class="workbench-heading">
+  <div>
+    <h1>{{ page_title }}</h1>
+    <p class="workbench-heading__status" data-draft-status aria-live="polite"></p>
+  </div>
+  <div class="form-mode-control" data-mode-control aria-label="编辑模式">
+    <button type="button" data-form-mode="quick" aria-pressed="true">快速录入</button>
+    <button type="button" data-form-mode="complete" aria-pressed="false">完整编辑</button>
+  </div>
+</header>
+<form method="post" enctype="multipart/form-data" class="question-workbench" data-question-form data-mode="quick" data-form-version="1" data-question-id="{{ question.pk|default:'' }}" data-question-updated-at="{{ question.updated_at|date:'c' }}" data-preview-url="{% url 'markdown-preview' %}" novalidate>
   {% csrf_token %}
-  {{ form.non_field_errors }}
-  {% for field in form %}
-    <div>
-      {{ field.label_tag }}
-      {{ field }}
-      {{ field.errors }}
-      {% if field.name == "attachments" %}<small>支持 PNG、JPEG、WebP，可一次选择多张图片。</small><div id="image-preview" data-image-preview aria-live="polite"></div>{% endif %}
+  {% if question_version and not conflict %}<input type="hidden" name="question_version" value="{{ question_version }}">{% endif %}
+  <input type="hidden" name="attachment_protocol" value="enhanced" disabled data-attachment-protocol>
+
+  {% if form.errors %}
+  <div class="form-error-summary" role="alert" tabindex="-1" data-error-summary>
+    <strong>请检查以下内容</strong>
+    {% for error in form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
+    <ul>
+      {% for field in form %}{% for error in field.errors %}
+      <li><a href="#{{ field.id_for_label }}">{{ field.label }}：{{ error }}</a></li>
+      {% endfor %}{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% if needs_upload_reselection %}<p class="upload-reselection" role="status">浏览器不会保留文件输入，请重新选择新文件后再保存。</p>{% endif %}
+  {% if conflict %}
+  <section class="form-conflict" data-conflict aria-labelledby="conflict-heading">
+    <h2 id="conflict-heading">服务器版本已更新</h2>
+    <p>当前表单内容尚未保存。请先保留本地草稿或加载服务器版本。</p>
+    <div class="form-conflict__actions">
+      <button type="button" data-preserve-local-draft>保留当前内容为本地草稿</button>
+      <a href="{% url 'question-edit' question.pk %}" data-reload-server>重新加载服务器版本</a>
     </div>
-  {% endfor %}
-  <button type="submit">保存</button>
-  <a href="{% if form.instance.pk %}{% url 'question-detail' form.instance.pk %}{% else %}{% url 'question-list' %}{% endif %}">取消</a>
+  </section>
+  {% endif %}
+
+  <section class="draft-recovery" data-draft-recovery hidden aria-labelledby="draft-recovery-heading">
+    <h2 id="draft-recovery-heading">本地草稿</h2>
+    <div data-draft-list role="list"></div>
+    {% if not question %}<button type="button" data-start-blank-draft>开始空白草稿</button>{% endif %}
+    <p data-recovery-status aria-live="polite"></p>
+  </section>
+
+  <div class="workbench-grid">
+    <section class="attachment-workspace" aria-labelledby="attachment-heading">
+      <div class="workbench-section-heading">
+        <h2 id="attachment-heading">题图与附件</h2>
+        <span data-attachment-count aria-live="polite"></span>
+      </div>
+      <div class="attachment-dropzone" data-attachment-dropzone>
+        <label for="{{ form.attachments.id_for_label }}">选择题图</label>
+        {{ form.attachments }}
+        <small>PNG、JPEG、WebP，可一次选择多张图片，也可粘贴或拖入。</small>
+        {{ form.attachments.errors }}
+      </div>
+      <div class="attachment-tools">
+        <button type="button" disabled data-ocr aria-describedby="ocr-availability">OCR 识别</button>
+        <span id="ocr-availability">后续开放</span>
+      </div>
+      <ol class="attachment-queue" data-attachment-queue aria-label="附件顺序">
+        {% for item in attachment_controls %}
+        <li class="attachment-row" data-attachment-id="{{ item.attachment.pk }}" data-file-kind="{{ item.attachment.file_kind }}" data-attachment-sort-order="{{ item.attachment.sort_order }}" data-attachment-filename="{{ item.attachment.file.name }}" data-attachment-updated-at="{{ item.attachment.updated_at|date:'c' }}" data-attachment-token="existing:{{ item.attachment.pk }}">
+          {% if item.attachment.file_kind == "image" %}
+          <div class="attachment-row__media">
+            <img src="{{ item.attachment.file.url }}" alt="已有题图 {{ forloop.counter }}" loading="lazy">
+            <button type="button" class="attachment-row__zoom" data-image-zoom data-image-src="{{ item.attachment.file.url }}" aria-label="放大查看 {{ item.attachment.file.name }}">放大</button>
+          </div>
+          {% else %}
+          <span class="attachment-row__file-icon" aria-hidden="true">{% if item.attachment.file_kind == "document" %}▤{% else %}◇{% endif %}</span>
+          {% endif %}
+          <div class="attachment-row__details">
+            <span class="attachment-row__name">{{ item.attachment.file.name }}</span>
+            <span class="attachment-row__kind">{{ item.attachment.get_file_kind_display }}</span>
+            <div class="attachment-row__controls">
+              <button type="button" data-attachment-drag-handle aria-label="拖动排序 {{ item.attachment.file.name }}" title="拖动排序">⋮⋮</button>
+              <button type="button" data-attachment-move="up" aria-label="上移 {{ item.attachment.file.name }}" title="上移">↑</button>
+              <button type="button" data-attachment-move="down" aria-label="下移 {{ item.attachment.file.name }}" title="下移">↓</button>
+              <label class="attachment-row__position" for="attachment-position-{{ item.attachment.pk }}">位置
+                <input id="attachment-position-{{ item.attachment.pk }}" type="number" min="0" name="attachment_position_{{ item.attachment.pk }}" value="{{ item.position }}">
+              </label>
+              <label class="attachment-row__remove"><input type="checkbox" name="remove_attachment" value="{{ item.attachment.pk }}"{% if item.removed %} checked{% endif %}>删除</label>
+            </div>
+          </div>
+        </li>
+        {% endfor %}
+      </ol>
+      <div id="image-preview" class="new-image-preview" data-image-preview aria-live="polite"></div>
+    </section>
+
+    <div class="workbench-editor">
+      <div class="question-form-tabs" role="tablist" aria-label="完整编辑" data-form-tabs>
+        <button type="button" id="question-tab" role="tab" aria-controls="question-panel" aria-selected="true" tabindex="0" data-tab="question">题目</button>
+        <button type="button" id="solution-tab" role="tab" aria-controls="solution-panel" aria-selected="false" tabindex="-1" data-tab="solution">解答</button>
+        <button type="button" id="relations-tab" role="tab" aria-controls="relations-panel" aria-selected="false" tabindex="-1" data-tab="relations">关联</button>
+      </div>
+
+      <section id="question-panel" class="form-tab-panel" role="tabpanel" aria-labelledby="question-tab" data-tab-panel="question">
+        <fieldset class="form-fieldset">
+        <legend>题目信息</legend>
+        <div class="form-field" data-subject-select>
+          {{ form.subject.label_tag }}{{ form.subject }}{{ form.subject.errors }}
+        </div>
+        <div class="form-field complete-only" data-section-select>
+          {{ form.section.label_tag }}
+          <select name="{{ form.section.html_name }}" id="{{ form.section.id_for_label }}">
+            <option value="">---------</option>
+            {% for section in form.section.field.queryset %}
+            <option value="{{ section.pk }}" data-subject-id="{{ section.subject_id }}"{% if form.section.value|stringformat:'s' == section.pk|stringformat:'s' %} selected{% endif %}>{{ section }}</option>
+            {% endfor %}
+          </select>{{ form.section.errors }}
+        </div>
+        <div class="form-field">
+          {{ form.title.label_tag }}{{ form.title }}{{ form.title.errors }}
+        </div>
+        <div class="form-field">
+          {{ form.statement.label_tag }}
+          <div class="markdown-toolbar" data-markdown-toolbar data-editor-target="id_statement" aria-label="题干格式工具">
+            <button type="button" data-insert="bold" title="加粗" aria-label="加粗"><strong>B</strong></button>
+            <button type="button" data-insert="inline-math" title="行内公式" aria-label="行内公式">$x$</button>
+            <button type="button" data-insert="block-math" title="块级公式" aria-label="块级公式">$$</button>
+            <button type="button" data-insert="sum" title="求和" aria-label="求和">∑</button>
+            <button type="button" data-insert="limit" title="极限" aria-label="极限">lim</button>
+            <button type="button" data-insert="fraction" title="分式" aria-label="分式">a/b</button>
+            <button type="button" data-insert="superscript" title="上标" aria-label="上标">x²</button>
+            <button type="button" data-insert="subscript" title="下标" aria-label="下标">x₂</button>
+          </div>
+          {{ form.statement }}{{ form.statement.errors }}
+        </div>
+        <div class="markdown-preview-wrap">
+          <h3>题干预览</h3>
+          <div class="markdown-preview" data-markdown-preview aria-live="polite"></div>
+          <p data-preview-status role="status" aria-live="polite"></p>
+        </div>
+        </fieldset>
+      </section>
+
+      <section id="solution-panel" class="form-tab-panel complete-only" role="tabpanel" aria-labelledby="solution-tab" data-tab-panel="solution">
+        <fieldset class="form-fieldset">
+        <legend>解答与复习</legend>
+        <div class="form-field">{{ form.personal_solution.label_tag }}{{ form.personal_solution }}{{ form.personal_solution.errors }}</div>
+        <div class="form-field">{{ form.reference_solution.label_tag }}{{ form.reference_solution }}{{ form.reference_solution.errors }}</div>
+        <div class="form-field">{{ form.error_note.label_tag }}{{ form.error_note }}{{ form.error_note.errors }}</div>
+        <div class="form-field">{{ form.mastery.label_tag }}{{ form.mastery }}{{ form.mastery.errors }}</div>
+        </fieldset>
+      </section>
+
+      <section id="relations-panel" class="form-tab-panel complete-only" role="tabpanel" aria-labelledby="relations-tab" data-tab-panel="relations">
+        <fieldset class="form-fieldset">
+        <legend>关联内容</legend>
+        <div class="form-field relation-field" data-relation-field="tags">
+          {{ form.tags.label_tag }}
+          <input type="search" data-relation-search="tags" aria-label="搜索标签" placeholder="搜索标签">
+          {{ form.tags }}{{ form.tags.errors }}
+        </div>
+        <div class="form-field relation-field" data-relation-field="knowledge_cards">
+          {{ form.knowledge_cards.label_tag }}
+          <input type="search" data-relation-search="knowledge_cards" aria-label="搜索知识卡片" placeholder="搜索知识卡片">
+          {{ form.knowledge_cards }}{{ form.knowledge_cards.errors }}
+        </div>
+        </fieldset>
+      </section>
+      {{ form.draft }}
+
+      <footer class="workbench-actions">
+        <p data-save-status role="status" aria-live="polite"></p>
+        <div>
+          <button type="submit" name="save_intent" value="draft"{% if conflict %} disabled{% endif %}{% if form.instance.pk and not form.instance.draft %} data-confirm-draft{% endif %}>{% if form.instance.pk and not form.instance.draft %}转为草稿{% else %}保存草稿{% endif %}</button>
+          <button type="submit" name="save_intent" value="publish"{% if conflict %} disabled{% endif %}>{% if form.instance.pk and not form.instance.draft %}保存修改{% elif form.instance.pk %}发布题目{% else %}保存题目{% endif %}</button>
+          <a href="{% if form.instance.pk %}{% url 'question-detail' form.instance.pk %}{% else %}{% url 'question-list' %}{% endif %}" data-cancel-edit>取消</a>
+        </div>
+      </footer>
+    </div>
+  </div>
 </form>
+<dialog class="image-zoom-dialog" data-image-dialog aria-label="题图放大预览">
+  <button type="button" data-image-dialog-close aria-label="关闭预览">×</button>
+  <img alt="放大后的题图" data-image-dialog-image>
+</dialog>
+<script type="module" src="{% static 'question_bank/js/question-form.js' %}"></script>
 {% endblock %}

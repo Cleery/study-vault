@@ -1,12 +1,41 @@
 {% extends "question_bank/base.html" %}
+{% load static %}
 {% block title %}{{ page_title }} | 数学题库{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'question_bank/css/knowledge-card.css' %}">{% endblock %}
 {% block content %}
-<h1>{{ page_title }}</h1>
-<form method="post">
-  {% csrf_token %}
-  {{ form.non_field_errors }}
-  {% for field in form %}<div>{{ field.label_tag }}{{ field }}{{ field.errors }}</div>{% endfor %}
-  <button type="submit">保存</button>
-  <a href="{% if form.instance.pk %}{% url 'knowledge-card-detail' form.instance.pk %}{% else %}{% url 'knowledge-card-list' %}{% endif %}">取消</a>
-</form>
+<div class="knowledge-card-workbench" data-knowledge-card-form data-preview-url="{% url 'markdown-preview' %}">
+  <header class="knowledge-card-workbench__header">
+    <div><p class="eyebrow">知识卡片 · {% if form.instance.pk %}编辑{% else %}新建{% endif %}</p><h1>{{ page_title }}</h1></div>
+    <div class="knowledge-card-workbench__actions">
+      <a class="button button-secondary" href="{% if form.instance.pk %}{% url 'knowledge-card-detail' form.instance.pk %}{% else %}{% url 'knowledge-card-list' %}{% endif %}">取消</a>
+      <button type="submit" form="knowledge-card-form">保存卡片</button>
+    </div>
+  </header>
+  <form method="post" id="knowledge-card-form" class="knowledge-card-form">
+    {% csrf_token %}{{ form.non_field_errors }}
+    <section class="knowledge-card-meta" aria-label="基本信息">
+      {% for field in form %}{% if field.name == 'name' or field.name == 'subject' or field.name == 'section' or field.name == 'type' %}<div class="knowledge-card-field{% if field.errors %} has-error{% endif %}">{{ field.label_tag }}{{ field }}{{ field.errors }}</div>{% endif %}{% endfor %}
+      <datalist id="subject-options">{% for subject in form.subject_options %}<option value="{{ subject.name }}"></option>{% endfor %}</datalist>
+      <datalist id="section-options">{% for section in form.section_options %}<option value="{{ section.name }}" label="{{ section.subject.name }}"></option>{% endfor %}</datalist>
+      <datalist id="type-options">{% for type_name in form.type_options %}<option value="{{ type_name }}"></option>{% endfor %}</datalist>
+    </section>
+    <section class="knowledge-card-core">
+      <div class="knowledge-card-pane-head"><div><h2>核心内容</h2><p>用标题组织定理、条件、证明和使用方法，支持 Markdown 与 LaTeX。</p></div><span class="knowledge-card-status" data-kc-status role="status" aria-live="polite">编辑内容后实时更新</span></div>
+      <div class="knowledge-card-workspace">
+        <div class="knowledge-card-editor-pane">
+          <div class="knowledge-card-toolbar" aria-label="编辑快捷操作"><button type="button" data-kc-insert="heading">标题</button><button type="button" data-kc-insert="strong">重点</button><button type="button" data-kc-insert="formula">插入公式</button><button type="button" data-kc-insert="list">列表</button></div>
+          {{ form.core_content.label_tag }}{{ form.core_content }}{{ form.core_content.errors }}
+        </div>
+        <div class="knowledge-card-preview-pane"><div class="knowledge-card-pane-title"><h3>实时预览</h3><span>保存时保留原始内容</span></div><div class="knowledge-card-rendered" data-kc-rendered></div></div>
+      </div>
+    </section>
+    <section class="knowledge-card-secondary-grid">
+      <div class="knowledge-card-section">{{ form.personal_notes.label_tag }}{{ form.personal_notes }}{{ form.personal_notes.errors }}</div>
+      <div class="knowledge-card-section">{{ form.prerequisite_cards.label_tag }}{{ form.prerequisite_cards }}{{ form.prerequisite_cards.errors }}<p class="field-help">可选。用于记录学习前置关系。</p></div>
+      <div class="knowledge-card-section knowledge-card-section--wide">{{ form.questions.label_tag }}{{ form.questions }}{{ form.questions.errors }}<p class="field-help">可多选。关联题目后会在卡片详情页显示。</p></div>
+    </section>
+    <div class="knowledge-card-form-footer"><button type="submit">保存卡片</button><a href="{% if form.instance.pk %}{% url 'knowledge-card-detail' form.instance.pk %}{% else %}{% url 'knowledge-card-list' %}{% endif %}">取消</a></div>
+  </form>
+</div>
+<script defer src="{% static 'question_bank/js/knowledge-card.js' %}"></script>
 {% endblock %}

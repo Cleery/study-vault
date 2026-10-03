@@ -66,8 +66,16 @@ python manage.py runserver 127.0.0.1:8000
 
 ## 测试与检查
 
+浏览器测试需要额外安装 Playwright 和 Chromium：
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m playwright install chromium
+```
+
 ```bash
 python -m pytest -q --basetemp .runtime/pytest
+python -m pytest tests/test_question_form_browser.py -q -m browser --basetemp .runtime/pytest-browser
 python manage.py check
 python manage.py collectstatic --noinput
 ```

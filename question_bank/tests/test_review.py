@@ -140,6 +140,43 @@ def test_overdue_queue_orders_by_days_overdue_and_card_filter(subject):
 
 
 @pytest.mark.django_db
+def test_review_queue_fallback_uses_due_state_and_results(client, subject):
+    due = make_question(subject, "待复习题", next_review_at=timezone.now() - timedelta(days=1))
+
+    response = client.get(reverse("review-list"), {"queue": "unknown"})
+
+    assert response.status_code == 200
+    assert response.context["queue"] == "due"
+    assert due in response.context["questions"]
+    tabs = response.context["queue_tabs"]
+    assert [tab["key"] for tab in tabs] == ["due", "recent", "overdue"]
+    assert [tab["title"] for tab in tabs] == ["今日到期", "最近错误", "逾期"]
+    assert tabs[0]["is_current"] is True
+    assert sum(tab["is_current"] for tab in tabs) == 1
+    assert tabs[0]["count"] == 1
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("queue", ["due", "recent", "overdue"])
+def test_review_workbench_counts_respect_selected_card(client, subject, queue):
+    selected = KnowledgeCard.objects.create(name="筛选卡", subject=subject, type="definition")
+    other = KnowledgeCard.objects.create(name="其他卡", subject=subject, type="definition")
+    first = make_question(subject, "选中卡的到期题", next_review_at=timezone.now() - timedelta(days=2))
+    second = make_question(subject, "其他卡的到期题", next_review_at=timezone.now() - timedelta(days=2))
+    first.knowledge_cards.add(selected)
+    second.knowledge_cards.add(other)
+
+    response = client.get(reverse("review-list"), {"queue": queue, "knowledge_card": selected.pk})
+
+    assert response.context["queue"] == queue
+    assert response.context["selected_card"] == str(selected.pk)
+    assert [tab["count"] for tab in response.context["queue_tabs"]] == [1, 0, 1]
+    assert [tab["is_current"] for tab in response.context["queue_tabs"]] == [
+        key == queue for key in ("due", "recent", "overdue")
+    ]
+
+
+@pytest.mark.django_db
 def test_review_detail_hides_reference_until_revealed(client, subject):
     question = make_question(subject, "隐藏参考", next_review_at=None)
     question.reference_solution = "秘密参考解答"

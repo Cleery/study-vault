@@ -4,6 +4,8 @@ import re
 import pytest
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import Client
+from django.urls import reverse
 from PIL import Image
 
 from question_bank.markdown import render_markdown
@@ -82,3 +84,72 @@ def test_mathjax_formula_cannot_restore_raw_html_after_sanitizing():
 
     assert "<img" not in rendered.lower()
     assert "$&lt;img src=x onerror=alert(1)&gt;$" in rendered
+
+
+def csrf_client():
+    client = Client(enforce_csrf_checks=True)
+    client.cookies["csrftoken"] = "a" * 32
+    return client
+
+
+def csrf_token(client):
+    return client.cookies["csrftoken"].value
+
+
+def test_markdown_preview_requires_post():
+    response = Client().get(reverse("markdown-preview"))
+
+    assert response.status_code == 405
+
+
+def test_markdown_preview_rejects_missing_csrf_token():
+    client = Client(enforce_csrf_checks=True)
+
+    missing = client.post(reverse("markdown-preview"), {"source": "**bold**"})
+
+    assert missing.status_code == 403
+
+
+@pytest.mark.django_db
+def test_markdown_preview_rejects_invalid_csrf_token_with_cookie():
+    client = Client(enforce_csrf_checks=True)
+    client.get(reverse("question-create"))
+    assert "csrftoken" in client.cookies
+    invalid_token = "b" * 32
+    assert invalid_token != client.cookies["csrftoken"].value
+
+    invalid = client.post(
+        reverse("markdown-preview"),
+        {"source": "**bold**", "csrfmiddlewaretoken": invalid_token},
+    )
+
+    assert invalid.status_code == 403
+
+
+def test_markdown_preview_returns_sanitized_html_and_preserves_mathjax():
+    client = csrf_client()
+    source = '<script>alert(1)</script><span onclick="evil()">Text</span> **bold** $x^2$'
+
+    response = client.post(
+        reverse("markdown-preview"),
+        {"source": source, "csrfmiddlewaretoken": csrf_token(client)},
+    )
+
+    assert response.status_code == 200
+    html = response.json()["html"]
+    assert "<script" not in html.lower()
+    assert "onclick" not in html.lower()
+    assert "<span" not in html.lower()
+    assert "<strong>bold</strong>" in html
+    assert "$x^2$" in html
+
+
+def test_markdown_preview_rejects_source_over_100000_characters():
+    client = csrf_client()
+
+    response = client.post(
+        reverse("markdown-preview"),
+        {"source": "x" * 100001, "csrfmiddlewaretoken": csrf_token(client)},
+    )
+
+    assert response.status_code == 400

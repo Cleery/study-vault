@@ -1,0 +1,30 @@
+{% extends "question_bank/base.html" %}
+{% load static %}
+{% block title %}{% if operation == "merge" %}合并标签{% else %}归档标签{% endif %} | 数学题库{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'question_bank/css/tag-workbench.css' %}">{% endblock %}
+{% block content %}
+<main class="tag-workbench">
+  <section class="tag-workbench__details tag-workbench__confirm" aria-labelledby="tag-confirm-title">
+    <p class="tag-workbench__eyebrow">TAG WORKBENCH</p>
+    <h1 id="tag-confirm-title">{% if operation == "merge" %}确认合并标签{% else %}确认归档标签{% endif %}</h1>
+    <p>来源标签：<strong>{{ source.name }}</strong></p>
+    {% if operation == "merge" %}<p>合并后，历史题目仍保留来源标签记录，新题目请使用目标标签。</p>{% else %}<p>归档后，该标签仍保留在历史题目中，默认候选不再显示。</p>{% endif %}
+    {% if error %}<p class="tag-workbench__confirm-error" role="alert">{{ error }}</p>{% endif %}
+    <form class="tag-workbench__form" method="post" action="{% if operation == 'merge' %}{% url 'tag-merge' source.pk %}{% else %}{% url 'tag-archive' source.pk %}{% endif %}{% if state_query %}?{{ state_query }}{% endif %}">
+      {% csrf_token %}
+      {% if operation == "merge" %}
+      <label for="tag-merge-target">合并目标</label>
+      <select id="tag-merge-target" name="target" required>
+        <option value="" {% if not selected_target %}selected{% endif %}>请选择目标标签</option>
+        {% if selected_target_invalid %}<option value="{{ selected_target }}" selected disabled>{% if selected_target_tag %}{{ selected_target_tag.name }}{% else %}{{ selected_target }}{% endif %}（已归档或不可用）</option>{% endif %}
+        {% for target in merge_targets %}<option value="{{ target.pk }}" {% if selected_target == target.pk|stringformat:"s" %}selected{% endif %}>{{ target.name }}</option>{% endfor %}
+      </select>
+      {% endif %}
+      <div class="tag-workbench__form-actions">
+        <button type="submit">{% if operation == "merge" %}确认合并{% else %}确认归档{% endif %}</button>
+        <a href="{% url 'tag-manage' %}?{{ cancel_query }}">取消，返回标签管理</a>
+      </div>
+    </form>
+  </section>
+</main>
+{% endblock %}

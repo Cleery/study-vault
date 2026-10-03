@@ -12,6 +12,7 @@ from .models import (
     Question,
     QuestionAttachment,
     ReviewRecord,
+    schedule_tag_picker_cache_invalidation,
     Section,
     Subject,
     Tag,
@@ -59,7 +60,7 @@ def _build_manifest():
     for obj in KnowledgeCard.objects.all().order_by("pk"):
         entities["knowledge_cards"].append({
             **_entity_base(obj), "subject_id": _entity_id("subject", obj.subject_id), "section_id": _entity_id("section", obj.section_id) if obj.section_id else None,
-            "name": obj.name, "type": obj.type, "formal_statement": obj.formal_statement, "conditions": obj.conditions,
+            "name": obj.name, "type": obj.type, "core_content": obj.core_content, "formal_statement": obj.formal_statement, "conditions": obj.conditions,
             "proof": obj.proof, "usage_signals": obj.usage_signals, "common_mistakes": obj.common_mistakes, "personal_notes": obj.personal_notes,
         })
     for obj in Tag.objects.all().order_by("pk"):
@@ -191,13 +192,14 @@ def _import_bundle(bundle, written_files):
             redirect_id = maps["tag"].get(data.get("redirect_to_id"))
             if redirect_id:
                 Tag.objects.filter(pk=maps["tag"][_entity_id("tag", data["id"])]).update(redirect_to_id=redirect_id)
+                schedule_tag_picker_cache_invalidation()
         for data in entities["knowledge_cards"]:
             subject_id = maps["subject"][_entity_id("subject", data["subject_id"].split(":", 1)[1])]
             section_id = maps["section"].get(data.get("section_id"))
             obj = KnowledgeCard.objects.filter(pk=data["id"]).first()
             obj = obj or KnowledgeCard.objects.filter(name=data["name"], subject_id=subject_id).first()
             obj = obj or KnowledgeCard(pk=data["id"], name=data["name"], subject_id=subject_id)
-            for field in ("type", "formal_statement", "conditions", "proof", "usage_signals", "common_mistakes", "personal_notes"):
+            for field in ("type", "core_content", "formal_statement", "conditions", "proof", "usage_signals", "common_mistakes", "personal_notes"):
                 setattr(obj, field, data.get(field, ""))
             obj.section_id = section_id
             obj.save()
