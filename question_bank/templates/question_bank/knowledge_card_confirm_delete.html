@@ -1,0 +1,19 @@
+{% extends "question_bank/base.html" %}
+{% block title %}确认删除知识卡片 | 数学题库{% endblock %}
+{% block content %}
+<main class="knowledge-card-delete-confirm">
+  <h1>确认删除知识卡片</h1>
+  <p>卡片：<strong>{{ card.name }}</strong></p>
+  <ul>
+    <li>关联题目：{{ question_count }}</li>
+    <li>前置卡片：{{ prerequisite_count }}</li>
+    <li>以此为前置的卡片：{{ dependent_count }}</li>
+  </ul>
+  <p>删除后，题目和其他知识卡片仍会保留，相关关联将解除。此操作无法在网站内撤销。</p>
+  <form method="post" action="{% url 'knowledge-card-delete' card.pk %}">
+    {% csrf_token %}
+    <button type="submit">确认删除</button>
+    <a href="{% url 'knowledge-card-detail' card.pk %}">取消，返回卡片</a>
+  </form>
+</main>
+{% endblock %}

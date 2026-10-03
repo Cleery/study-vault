@@ -22,6 +22,7 @@ urlpatterns = [
     path("knowledge-cards/new/", views.knowledge_card_create, name="knowledge-card-create"),
     path("knowledge-cards/<uuid:pk>/", views.knowledge_card_detail, name="knowledge-card-detail"),
     path("knowledge-cards/<uuid:pk>/edit/", views.knowledge_card_edit, name="knowledge-card-edit"),
+    path("knowledge-cards/<uuid:pk>/delete/", views.knowledge_card_delete, name="knowledge-card-delete"),
     path("review/", views.review_list, name="review-list"),
     path("review/<uuid:pk>/", views.review_detail, name="review-detail"),
     path("stats/", views.stats, name="stats"),

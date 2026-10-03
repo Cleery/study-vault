@@ -1,12 +1,12 @@
 import io
 
 import pytest
-from django.test import override_settings
+from django.test import Client, override_settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 from PIL import Image
 
-from question_bank.models import KnowledgeCard, Question, QuestionAttachment, Section, Subject, Tag
+from question_bank.models import KnowledgeCard, KnowledgeCardPrerequisite, Question, QuestionAttachment, Section, Subject, Tag
 
 
 def image_file(name, color):
@@ -442,6 +442,74 @@ def test_knowledge_card_creation_persists_all_fields_and_question_link(client, s
     assert card.formal_statement == "若连续则存在 $c$"
     assert list(card.prerequisite_cards.all()) == [prerequisite]
     assert list(card.questions.all()) == [question]
+
+
+@pytest.mark.django_db
+def test_knowledge_card_delete_confirmation_is_read_only_and_shows_impact(client, subject):
+    card = KnowledgeCard.objects.create(name="待删除定理", subject=subject, type="theorem")
+    prerequisite = KnowledgeCard.objects.create(name="前置概念", subject=subject, type="definition")
+    dependent = KnowledgeCard.objects.create(name="后续定理", subject=subject, type="theorem")
+    question = Question.objects.create(subject=subject, title="关联题", draft=False)
+    card.questions.add(question)
+    card.prerequisite_cards.add(prerequisite)
+    dependent.prerequisite_cards.add(card)
+
+    detail = client.get(reverse("knowledge-card-detail", args=[card.pk]))
+    response = client.get(reverse("knowledge-card-delete", args=[card.pk]))
+
+    assert detail.status_code == 200
+    assert reverse("knowledge-card-delete", args=[card.pk]) in detail.content.decode()
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert "待删除定理" in body
+    assert "关联题目：1" in body
+    assert "前置卡片：1" in body
+    assert "以此为前置的卡片：1" in body
+    assert "确认删除" in body
+    assert KnowledgeCard.objects.filter(pk=card.pk).exists()
+
+
+@pytest.mark.django_db
+def test_knowledge_card_delete_post_preserves_related_records_and_shows_message(client, subject):
+    card = KnowledgeCard.objects.create(name="待删除定理", subject=subject, type="theorem")
+    prerequisite = KnowledgeCard.objects.create(name="前置概念", subject=subject, type="definition")
+    dependent = KnowledgeCard.objects.create(name="后续定理", subject=subject, type="theorem")
+    question = Question.objects.create(subject=subject, title="关联题", draft=False)
+    card.questions.add(question)
+    card.prerequisite_cards.add(prerequisite)
+    dependent.prerequisite_cards.add(card)
+
+    response = client.post(reverse("knowledge-card-delete", args=[card.pk]), follow=True)
+
+    assert response.status_code == 200
+    assert response.redirect_chain == [(reverse("knowledge-card-list"), 302)]
+    assert "知识卡片已删除" in response.content.decode()
+    assert not KnowledgeCard.objects.filter(pk=card.pk).exists()
+    assert KnowledgeCard.objects.filter(pk__in=[prerequisite.pk, dependent.pk]).count() == 2
+    assert Question.objects.filter(pk=question.pk).exists()
+    assert not question.knowledge_cards.exists()
+    assert not KnowledgeCardPrerequisite.objects.filter(knowledge_card_id=card.pk).exists()
+    assert not KnowledgeCardPrerequisite.objects.filter(prerequisite_id=card.pk).exists()
+
+
+@pytest.mark.django_db
+def test_knowledge_card_delete_missing_card_returns_404(client):
+    import uuid
+
+    url = reverse("knowledge-card-delete", args=[uuid.uuid4()])
+    assert client.get(url).status_code == 404
+    assert client.post(url).status_code == 404
+
+
+@pytest.mark.django_db
+def test_knowledge_card_delete_requires_csrf(subject):
+    card = KnowledgeCard.objects.create(name="待删除定理", subject=subject, type="theorem")
+    client = Client(enforce_csrf_checks=True)
+
+    response = client.post(reverse("knowledge-card-delete", args=[card.pk]))
+
+    assert response.status_code == 403
+    assert KnowledgeCard.objects.filter(pk=card.pk).exists()
 
 
 @pytest.mark.django_db

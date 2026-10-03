@@ -518,6 +518,26 @@ def knowledge_card_detail(request, pk):
     return render(request, "question_bank/knowledge_card_detail.html", context)
 
 
+@require_http_methods(["GET", "POST"])
+def knowledge_card_delete(request, pk):
+    card = get_object_or_404(KnowledgeCard, pk=pk)
+    if request.method == "POST":
+        with transaction.atomic():
+            card.delete()
+        messages.success(request, "知识卡片已删除。")
+        return redirect("knowledge-card-list")
+    return render(
+        request,
+        "question_bank/knowledge_card_confirm_delete.html",
+        {
+            "card": card,
+            "question_count": card.questions.count(),
+            "prerequisite_count": card.prerequisite_cards.count(),
+            "dependent_count": card.dependent_cards.count(),
+        },
+    )
+
+
 def review_list(request):
     """Review queues: due today, recent mistakes, and overdue questions."""
     queue = request.GET.get("queue", "due")

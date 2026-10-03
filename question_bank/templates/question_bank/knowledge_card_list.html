@@ -1,6 +1,7 @@
 {% extends "question_bank/base.html" %}
 {% block title %}知识卡片 | 数学题库{% endblock %}
 {% block content %}
+{% if messages %}<div class="knowledge-card-messages" role="status">{% for message in messages %}<p>{{ message }}</p>{% endfor %}</div>{% endif %}
 <header class="knowledge-card-list-heading">
   <h1>知识卡片</h1>
   <a class="knowledge-card-create-button" href="{% url 'knowledge-card-create' %}"><span aria-hidden="true">＋</span> 新建知识卡片</a>

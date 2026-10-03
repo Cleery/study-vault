@@ -2,7 +2,7 @@
 {% block title %}{{ card.name }} | 知识卡片{% endblock %}
 {% block content %}
 <article>
-  <header><h1>{{ card.name }}</h1><p>{{ card.subject.name }}{% if card.section %} / {{ card.section.name }}{% endif %} · {{ card.get_type_display }}</p><a href="{% url 'knowledge-card-edit' card.pk %}">编辑</a></header>
+  <header><h1>{{ card.name }}</h1><p>{{ card.subject.name }}{% if card.section %} / {{ card.section.name }}{% endif %} · {{ card.get_type_display }}</p><a href="{% url 'knowledge-card-edit' card.pk %}">编辑</a> <a href="{% url 'knowledge-card-delete' card.pk %}">删除卡片</a></header>
   <section><h2>核心内容</h2><div>{{ core_content_html|safe }}</div></section>
   <section><h2>个人笔记</h2><div>{{ personal_notes_html|safe }}</div></section>
   <section><h2>前置卡片</h2><ul>{% for prerequisite in card.prerequisite_cards.all %}<li><a href="{% url 'knowledge-card-detail' prerequisite.pk %}">{{ prerequisite.name }}</a></li>{% empty %}<li>无</li>{% endfor %}</ul></section>
