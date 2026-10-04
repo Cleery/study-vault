@@ -198,7 +198,7 @@ def test_attachment_removal_keeps_keyboard_focus_in_queue_or_upload(live_server)
 
 @pytest.mark.browser
 @pytest.mark.django_db(transaction=True)
-def test_editor_filters_sections_and_searches_multiselects(live_server):
+def test_editor_accepts_custom_meta_fields_and_searches_multiselects(live_server):
     analysis = Subject.objects.create(name="分析")
     algebra = Subject.objects.create(name="代数")
     first = Section.objects.create(subject=analysis, name="极限")
@@ -212,11 +212,9 @@ def test_editor_filters_sections_and_searches_multiselects(live_server):
             page = browser.new_page()
             page.goto(f"{live_server.url}{reverse('question-create')}")
             page.locator('[data-form-mode="complete"]').click()
-            page.locator("#id_subject").select_option(str(analysis.pk))
-            assert page.locator(f'#id_section option[value="{first.pk}"]').evaluate("el => !el.hidden")
-            assert page.locator(f'#id_section option[value="{second.pk}"]').evaluate("el => el.hidden")
-            page.locator("#id_section").select_option(str(first.pk))
-            page.locator("#id_subject").select_option(str(algebra.pk))
+            page.locator("#id_subject").fill(analysis.name)
+            page.locator("#id_section").fill(first.name)
+            page.locator("#id_subject").fill(algebra.name)
             assert page.locator("#id_section").input_value() == ""
             page.get_by_role("tab", name="关联").click()
             page.locator("#id_tags").select_option(str(selected_tag.pk))

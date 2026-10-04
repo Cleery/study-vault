@@ -214,6 +214,90 @@ def test_question_creation_accepts_markdown_latex_and_ordered_images(client, sub
 
 
 @pytest.mark.django_db
+def test_question_creation_creates_new_subject_and_section_from_text(client):
+    response = client.post(
+        reverse("question-create"),
+        {
+            "subject": "实变函数",
+            "section": "测度与积分",
+            "title": "自定义章节题",
+            "statement": "题干",
+            "save_intent": "publish",
+        },
+    )
+
+    assert response.status_code == 302
+    subject = Subject.objects.get(name="实变函数")
+    section = Section.objects.get(subject=subject, name="测度与积分")
+    question = Question.objects.get(title="自定义章节题")
+    assert question.subject == subject
+    assert question.section == section
+
+
+@pytest.mark.django_db
+def test_invalid_question_does_not_create_new_subject_or_section(client):
+    response = client.post(
+        reverse("question-create"),
+        {
+            "subject": "临时科目",
+            "section": "临时章节",
+            "title": "",
+            "statement": "",
+            "mastery": "invalid",
+            "save_intent": "publish",
+        },
+    )
+
+    assert response.status_code == 200
+    assert not Subject.objects.filter(name="临时科目").exists()
+    assert not Section.objects.filter(name="临时章节").exists()
+
+
+@pytest.mark.django_db
+def test_question_creation_keeps_legacy_subject_and_section_ids(client, subject, section):
+    response = client.post(
+        reverse("question-create"),
+        {
+            "subject": str(subject.pk),
+            "section": str(section.pk),
+            "title": "旧表单兼容题",
+            "save_intent": "publish",
+        },
+    )
+
+    assert response.status_code == 302
+    question = Question.objects.get(title="旧表单兼容题")
+    assert question.subject == subject
+    assert question.section == section
+
+
+@pytest.mark.django_db
+def test_question_form_meta_fields_are_free_text_with_existing_suggestions(client, subject, section):
+    response = client.get(reverse("question-create"))
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert 'name="subject"' in body and 'type="text"' in body
+    assert 'name="section"' in body and 'type="text"' in body
+    assert 'list="question-subject-options"' in body
+    assert 'list="question-section-options"' in body
+    assert f'value="{subject.name}"' in body
+    assert f'value="{section.name}"' in body
+
+
+@pytest.mark.django_db
+def test_question_edit_prefills_subject_and_section_names(client, subject, section):
+    question = Question.objects.create(subject=subject, section=section, title="待编辑")
+
+    response = client.get(reverse("question-edit", args=[question.pk]))
+
+    assert response.status_code == 200
+    form = response.context["form"]
+    assert form.initial["subject"] == subject.name
+    assert form.initial["section"] == section.name
+
+
+@pytest.mark.django_db
 def test_question_edit_updates_fields_and_relationships(client, subject, section):
     card = KnowledgeCard.objects.create(name="极限定义", subject=subject, type="definition")
     question = Question.objects.create(subject=subject, title="旧标题", draft=False)

@@ -108,13 +108,7 @@
           {{ form.subject.label_tag }}{{ form.subject }}{{ form.subject.errors }}
         </div>
         <div class="form-field complete-only" data-section-select>
-          {{ form.section.label_tag }}
-          <select name="{{ form.section.html_name }}" id="{{ form.section.id_for_label }}">
-            <option value="">---------</option>
-            {% for section in form.section.field.queryset %}
-            <option value="{{ section.pk }}" data-subject-id="{{ section.subject_id }}"{% if form.section.value|stringformat:'s' == section.pk|stringformat:'s' %} selected{% endif %}>{{ section }}</option>
-            {% endfor %}
-          </select>{{ form.section.errors }}
+          {{ form.section.label_tag }}{{ form.section }}{{ form.section.errors }}
         </div>
         <div class="form-field">
           {{ form.title.label_tag }}{{ form.title }}{{ form.title.errors }}
@@ -183,5 +177,7 @@
   <button type="button" data-image-dialog-close aria-label="关闭预览">×</button>
   <img alt="放大后的题图" data-image-dialog-image>
 </dialog>
+<datalist id="question-subject-options">{% for subject in form.subject_options %}<option value="{{ subject.name }}"></option>{% endfor %}</datalist>
+<datalist id="question-section-options">{% for section in form.section_options %}<option value="{{ section.name }}" label="{{ section.subject.name }}" data-subject-name="{{ section.subject.name }}"></option>{% endfor %}</datalist>
 <script type="module" src="{% static 'question_bank/js/question-form.js' %}"></script>
 {% endblock %}

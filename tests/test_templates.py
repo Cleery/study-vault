@@ -536,11 +536,11 @@ def test_tag_picker_script_keeps_native_category_links_on_enhancement_failure():
 
 
 @pytest.mark.django_db
-def test_question_workbench_section_options_expose_subject(client, subject):
+def test_question_workbench_section_suggestions_expose_subject(client, subject):
     section = Section.objects.create(subject=subject, name="极限")
     response = client.get(reverse("question-create"))
     body = response.content.decode()
-    assert f'value="{section.pk}" data-subject-id="{subject.pk}"' in body
+    assert f'value="{section.name}" label="{subject.name}"' in body
 
 
 @pytest.mark.django_db

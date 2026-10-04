@@ -156,16 +156,27 @@ export function initializeEditor(root) {
     });
   });
 
-  const subject = root.querySelector('[data-subject-select] select');
-  const section = root.querySelector('[data-section-select] select');
+  const subject = root.querySelector('[data-subject-select] input');
+  const section = root.querySelector('[data-section-select] input');
+  const sectionOptions = [...document.querySelectorAll('#question-section-options option')];
+  let lastSubjectName = subject?.value.trim() || '';
   function refreshSections() {
     if (!subject || !section) return;
-    [...section.options].forEach(option => {
-      option.hidden = Boolean(option.value && subject.value && option.dataset.subjectId !== subject.value);
-      if (option.hidden && option.selected) section.value = '';
-    });
+    const subjectName = subject.value.trim();
+    const selectedOption = sectionOptions.find(option => option.value === section.value);
+    const subjectChanged = subjectName !== lastSubjectName;
+    if (
+      section.value &&
+      subjectChanged &&
+      (selectedOption?.dataset.subjectName !== subjectName || !selectedOption)
+    ) {
+      section.value = '';
+    }
+    lastSubjectName = subjectName;
   }
+  subject?.addEventListener('input', refreshSections);
   subject?.addEventListener('change', refreshSections);
+  section?.addEventListener('change', refreshSections);
   refreshSections();
 
   return {setMode, activateTab, refreshSections};

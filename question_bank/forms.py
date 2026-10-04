@@ -24,6 +24,8 @@ class MultipleFileField(forms.FileField):
 
 
 class QuestionForm(forms.ModelForm):
+    subject = forms.CharField(label="科目", max_length=100, required=False)
+    section = forms.CharField(label="章节", max_length=150, required=False)
     attachments = MultipleFileField(
         required=False,
         label="图片附件",
@@ -80,6 +82,19 @@ class QuestionForm(forms.ModelForm):
             args = (data, *args[1:])
         self.save_intent = save_intent
         super().__init__(*args, **kwargs)
+        self.fields["subject"].widget.attrs.update(
+            {"list": "question-subject-options", "autocomplete": "off"}
+        )
+        self.fields["section"].widget.attrs.update(
+            {"list": "question-section-options", "autocomplete": "off"}
+        )
+        self.subject_options = Subject.objects.order_by("name", "id")
+        self.section_options = Section.objects.select_related("subject").order_by(
+            "subject_id", "sort_order", "name", "id"
+        )
+        if self.instance and self.instance.pk and not self.is_bound:
+            self.initial["subject"] = self.instance.subject.name if self.instance.subject else ""
+            self.initial["section"] = self.instance.section.name if self.instance.section else ""
         if self.instance and self.instance.pk:
             self.fields["tags"].queryset = Tag.objects.filter(
                 Q(archived=False) | Q(questions=self.instance)
@@ -111,11 +126,56 @@ class QuestionForm(forms.ModelForm):
             self.add_error(None, "保存意图无效，必须选择保存为草稿或正式题目。")
         if not cleaned.get("mastery"):
             cleaned["mastery"] = Question.MASTERY_UNSTARTED
-        subject = cleaned.get("subject")
-        section = cleaned.get("section")
-        if subject and section and section.subject_id != subject.pk:
-            self.add_error("section", "章节必须属于题目的科目。")
+        subject_name = (cleaned.get("subject") or "").strip()
+        section_name = (cleaned.get("section") or "").strip()
+        legacy_subject_id = None
+        legacy_section_subject_id = None
+        if subject_name.isdigit():
+            legacy_subject = Subject.objects.filter(pk=subject_name).first()
+            if legacy_subject:
+                legacy_subject_id = legacy_subject.pk
+                subject_name = legacy_subject.name
+        if section_name.isdigit():
+            legacy_section = Section.objects.select_related("subject").filter(pk=section_name).first()
+            if legacy_section:
+                section_name = legacy_section.name
+                legacy_section_subject_id = legacy_section.subject_id
+                if not subject_name:
+                    subject_name = legacy_section.subject.name
+        legacy_subject = Subject.objects.filter(name=subject_name).first() if subject_name else None
+        if legacy_section_subject_id and legacy_subject_id:
+            if legacy_subject_id != legacy_section_subject_id:
+                self.add_error("section", "章节必须属于题目的科目。")
+        if section_name and not subject_name:
+            self.add_error("section", "填写章节前请先填写科目。")
+        if not self.errors:
+            subject = legacy_subject or (Subject.objects.filter(name=subject_name).first() if subject_name else None)
+            if subject_name and subject is None:
+                subject, created = Subject.objects.get_or_create(name=subject_name)
+                if created:
+                    self._created_subject_ids = getattr(self, "_created_subject_ids", []) + [subject.pk]
+            cleaned["subject"] = subject
+            if section_name and subject:
+                section = Section.objects.filter(subject=subject, name=section_name).first()
+                if section is None:
+                    section, created = Section.objects.get_or_create(subject=subject, name=section_name)
+                    if created:
+                        self._created_section_ids = getattr(self, "_created_section_ids", []) + [section.pk]
+                cleaned["section"] = section
+            else:
+                cleaned["section"] = None
+        else:
+            cleaned["subject"] = None
+            cleaned["section"] = None
         return cleaned
+
+    def _post_clean(self):
+        super()._post_clean()
+        if self.errors:
+            Section.objects.filter(pk__in=getattr(self, "_created_section_ids", [])).delete()
+            Subject.objects.filter(pk__in=getattr(self, "_created_subject_ids", [])).delete()
+            self._created_section_ids = []
+            self._created_subject_ids = []
 
 
 class KnowledgeCardForm(forms.ModelForm):
