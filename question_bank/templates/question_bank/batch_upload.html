@@ -1,0 +1,19 @@
+{% extends "question_bank/base.html" %}
+{% load static %}
+{% block title %}批量录入 | 数学题库{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'question_bank/css/batch-entry.css' %}"><script defer src="{% static 'question_bank/js/batch-upload.js' %}"></script>{% endblock %}
+{% block content %}
+<section class="batch-page" data-batch-upload data-batch-id="{{ batch_id }}" data-upload-url="{% url 'batch-upload' %}" data-detail-url="{% url 'batch-detail' batch_id=batch_id %}">
+  <header class="page-heading"><div><p class="eyebrow">题目录入</p><h1>批量录入题图</h1><p>一张图片生成一道待整理草稿，上传完成后再填写科目、章节和标签。</p></div></header>
+  {% if saved_result %}<div class="notice notice--success">图片已保存。<a href="{% url 'batch-upload-page' %}?batch_id={{ batch_id }}">继续添加</a> <a href="{% url 'batch-detail' batch_id=batch_id %}">整理本批次</a></div>{% endif %}
+  <form method="post" enctype="multipart/form-data" action="{% url 'batch-upload-page' %}" data-native-upload>
+    {% csrf_token %}<input type="hidden" name="batch_id" value="{{ batch_id }}">
+    <label class="upload-drop"><span>选择题目图片</span><input type="file" name="image" accept="image/png,image/jpeg,image/webp" data-image-queue></label>
+    <p class="help-text">支持 PNG、JPEG、WebP，单张不超过 10 MB。无脚本时每次提交一张图片。</p>
+    <div class="batch-queue" data-queue aria-live="polite"></div>
+    <button class="button button--primary" type="submit" data-upload-all>上传为草稿</button>
+  </form>
+  <a href="{% url 'batch-detail' batch_id=batch_id %}" data-saved-link hidden>整理已上传题目</a>
+  <p><a href="{% url 'question-list' %}">返回题目检索</a> · <a href="{% url 'question-list' %}?draft=1">查看待整理草稿</a></p>
+</section>
+{% endblock %}

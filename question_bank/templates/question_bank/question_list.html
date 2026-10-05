@@ -7,11 +7,13 @@
     <h1>题目检索</h1>
   </div>
   <p class="result-count">{{ paginator.count }} 道题目</p>
+  <nav class="page-actions"><a class="button" href="{% url 'batch-upload-page' %}">批量录入</a><a href="{% url 'question-list' %}?draft=1">待整理草稿</a></nav>
 </header>
 
 <section class="filter-panel" aria-labelledby="filter-heading">
   <h2 id="filter-heading">筛选条件</h2>
   <form method="get" action="{% url 'question-list' %}#question-results" id="question-filter-form">
+    {% if draft_filter %}<input type="hidden" name="draft" value="1">{% endif %}
     <div class="filter-panel__search">
       <label for="question-query">关键词</label>
       <input id="question-query" type="search" name="q" value="{{ query }}" placeholder="搜索标题、题干、解法或错误记录">
@@ -226,6 +228,7 @@
             {% for card in question.knowledge_cards.all %}<a class="knowledge-link" href="{% url 'knowledge-card-detail' card.pk %}">{{ card.name }}</a>{% endfor %}
           </div>
           <div class="question-actions">
+            {% if question.draft %}<a href="{% url 'question-edit' question.pk %}">编辑草稿</a>{% endif %}
             <a href="{% url 'question-detail' question.pk %}">查看详情</a>
             <a class="button" href="{% url 'review-detail' question.pk %}">开始复习</a>
           </div>

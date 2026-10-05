@@ -90,7 +90,7 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-Basic Auth 配置位于 HTTPS `server` 级别，应用、媒体和静态文件均受保护。Nginx 上传限制为 10 MB。
+Basic Auth 配置位于 HTTPS `server` 级别，应用、媒体和静态文件均受保护。Nginx 单次请求限制为 12 MB，应用仍限制单张图片本体不超过 10 MB。
 
 ## 6. Gunicorn 服务
 

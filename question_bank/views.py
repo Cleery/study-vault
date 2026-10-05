@@ -1,6 +1,6 @@
 from django.contrib import messages
 from django.db import transaction
-from django.http import HttpResponseBadRequest, HttpResponseRedirect, JsonResponse
+from django.http import HttpResponseBadRequest, HttpResponseRedirect, JsonResponse, HttpResponse
 from django.core.paginator import Paginator
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -13,9 +13,11 @@ from .attachments import (
     cleanup_unreferenced_files,
     parse_attachment_plan,
 )
-from .forms import KnowledgeCardForm, QuestionForm, TagForm, build_core_content
+from .forms import KnowledgeCardForm, QuestionForm, QuestionMetadataForm, TagForm, build_core_content
 from .markdown import render_markdown
 from .models import KnowledgeCard, Question, QuestionAttachment, Section, Subject, Tag
+from .batch_entry import UploadConflict, create_batch_draft
+from django.core.exceptions import ValidationError
 from .review import due_today_questions, get_overdue_questions, get_recent_mistakes, apply_review
 from .search import (
     active_tag_queryset,
@@ -69,6 +71,7 @@ def question_list(request):
         "tag": {str(item.pk): item.name for item in all_tags},
         "knowledge_card": {str(item.pk): item.name for item in knowledge_cards},
         "mastery": dict(mastery_choices),
+        "draft": {"1": "待整理草稿"},
         "due": {
             value: "仅显示到期题目"
             for value in ("1", "true", "yes", "on", "due", "overdue")
@@ -79,6 +82,7 @@ def question_list(request):
     selected_due = due_filter_is_active(request.GET)
     active_filters = []
     filter_definitions = (
+        ("draft", "状态", ("draft",)),
         ("q", "关键词", ("q", "keyword")),
         ("subject", "科目", ("subject", "subjects")),
         ("section", "章节", ("section", "sections")),
@@ -150,8 +154,165 @@ def question_list(request):
         "selected_due": selected_due,
         "query": query,
         "tag_picker": tag_picker,
+        "draft_filter": parameter_values(request.GET, "draft"),
     }
     return render(request, "question_bank/question_list.html", context)
+
+
+@require_http_methods(["GET", "POST"])
+def batch_upload_page(request):
+    if request.method == "POST":
+        image = request.FILES.get("image")
+        if image is None:
+            return HttpResponseBadRequest("请选择图片。")
+        import uuid
+        batch_id = request.POST.get("batch_id") or uuid.uuid4()
+        upload_id = request.POST.get("client_upload_id") or uuid.uuid4()
+        try:
+            question, created = create_batch_draft(
+                image=image, batch_id=UUID(str(batch_id)), client_upload_id=UUID(str(upload_id))
+            )
+        except (ValueError, ValidationError) as exc:
+            return HttpResponseBadRequest(str(exc))
+        return redirect(f"{reverse('batch-upload-page')}?saved=1&batch_id={batch_id}")
+    import uuid
+    raw_batch_id = request.GET.get("batch_id")
+    try:
+        batch_id = UUID(raw_batch_id) if raw_batch_id else uuid.uuid4()
+    except ValueError:
+        batch_id = uuid.uuid4()
+    return render(request, "question_bank/batch_upload.html", {
+        "batch_id": batch_id, "saved_result": request.GET.get("saved") == "1",
+    })
+
+
+@require_POST
+def batch_upload(request):
+    image = request.FILES.get("image")
+    if image is None:
+        return JsonResponse({"error": "请选择图片。"}, status=400)
+    try:
+        batch_id = UUID(request.POST.get("batch_id", ""))
+        upload_id = UUID(request.POST.get("client_upload_id", ""))
+    except (ValueError, TypeError):
+        return JsonResponse({"error": "批次标识无效。"}, status=400)
+    try:
+        question, created = create_batch_draft(
+            image=image, batch_id=batch_id, client_upload_id=upload_id
+        )
+    except UploadConflict as exc:
+        return JsonResponse({"error": str(exc)}, status=409)
+    except ValidationError as exc:
+        return JsonResponse({"error": "; ".join(exc.messages)}, status=400)
+    if request.headers.get("Accept") != "application/json":
+        return redirect(f"{reverse('batch-upload-page')}?saved=1&batch_id={batch_id}")
+    return JsonResponse({
+        "question_id": str(question.pk), "batch_id": str(batch_id), "created": created,
+    }, status=201 if created else 200)
+
+
+def _batch_questions(batch_id):
+    return Question.objects.filter(
+        batch_id=batch_id, draft=True, archived=False, deleted_at__isnull=True
+    ).prefetch_related("attachments", "tags").select_related("subject", "section")
+
+
+@require_GET
+def batch_detail(request, batch_id):
+    return _render_batch_detail(request, batch_id)
+
+
+def _render_batch_detail(request, batch_id, *, metadata_form=None, metadata_question_id=None, bulk_error=None):
+    questions = list(_batch_questions(batch_id))
+    return render(request, "question_bank/batch_detail.html", {
+        "batch_id": batch_id, "questions": questions,
+        "tags": Tag.objects.filter(archived=False, redirect_to__isnull=True).order_by("name", "id"),
+        "subjects": Subject.objects.order_by("name"),
+        "sections": Section.objects.select_related("subject").order_by("subject_id", "name"),
+        "metadata_form": metadata_form,
+        "metadata_question_id": metadata_question_id,
+        "metadata_selected_tags": request.POST.getlist("tags") if metadata_form else [],
+        "bulk_error": bulk_error,
+        "bulk_data": request.POST if bulk_error else None,
+        "bulk_selected_ids": request.POST.getlist("questions") if bulk_error else [],
+        "bulk_selected_tags": request.POST.getlist("tags") if bulk_error else [],
+    }, status=400 if metadata_form or bulk_error else 200)
+
+
+@require_POST
+def batch_metadata(request, batch_id, question_id):
+    question = get_object_or_404(_batch_questions(batch_id), pk=question_id)
+    form = QuestionMetadataForm(request.POST, instance=question)
+    if form.is_valid():
+        with transaction.atomic():
+            subject_name = form.cleaned_data["subject_name"]
+            section_name = form.cleaned_data["section_name"]
+            subject = Subject.objects.filter(name=subject_name).first() if subject_name else None
+            if subject_name and subject is None:
+                subject = Subject.objects.create(name=subject_name)
+            section = None
+            if section_name and subject:
+                section = Section.objects.filter(subject=subject, name=section_name).first()
+                if section is None:
+                    section = Section.objects.create(subject=subject, name=section_name)
+            question.subject = subject
+            question.section = section
+            question.save(update_fields=["subject", "section", "updated_at"])
+            question.tags.set(form.cleaned_data["tags"])
+        return redirect("batch-detail", batch_id=batch_id)
+    return _render_batch_detail(
+        request, batch_id, metadata_form=form, metadata_question_id=question_id
+    )
+
+
+@require_POST
+def batch_apply(request, batch_id):
+    try:
+        ids = {UUID(value) for value in request.POST.getlist("questions")}
+    except (ValueError, TypeError):
+        return _render_batch_detail(request, batch_id, bulk_error="题目标识无效。")
+    if not ids:
+        return _render_batch_detail(request, batch_id, bulk_error="请先选择题目。")
+    questions = list(_batch_questions(batch_id).filter(pk__in=ids))
+    if len(questions) != len(ids):
+        return _render_batch_detail(request, batch_id, bulk_error="只能选择本批次中仍为草稿的题目。")
+    apply_subject = request.POST.get("apply_subject") == "on"
+    apply_section = request.POST.get("apply_section") == "on"
+    add_tags = request.POST.get("add_tags") == "on"
+    subject_name = request.POST.get("subject", "").strip()
+    section_name = request.POST.get("section", "").strip()
+    if len(subject_name) > 100 or len(section_name) > 150:
+        return _render_batch_detail(request, batch_id, bulk_error="科目或章节名称过长。")
+    if apply_section and section_name and not (apply_subject and subject_name):
+        return _render_batch_detail(request, batch_id, bulk_error="批量填写章节时请同时选择科目。")
+    tag_ids = set(request.POST.getlist("tags")) if add_tags else set()
+    try:
+        tags = list(Tag.objects.filter(pk__in=tag_ids, archived=False, redirect_to__isnull=True))
+    except ValidationError:
+        return _render_batch_detail(request, batch_id, bulk_error="标签选择无效。")
+    if len(tags) != len(tag_ids):
+        return _render_batch_detail(request, batch_id, bulk_error="标签选择无效。")
+    with transaction.atomic():
+        subject = Subject.objects.filter(name=subject_name).first() if apply_subject and subject_name else None
+        if apply_subject and subject_name and subject is None:
+            subject = Subject.objects.create(name=subject_name)
+        section = None
+        if apply_section and section_name:
+            section = Section.objects.filter(subject=subject, name=section_name).first()
+            if section is None:
+                section = Section.objects.create(subject=subject, name=section_name)
+        for question in questions:
+            if apply_subject:
+                question.subject = subject
+                if question.section and question.section.subject_id != getattr(subject, "pk", None):
+                    question.section = None
+            if apply_section:
+                question.section = section
+            if apply_subject or apply_section:
+                question.save(update_fields=["subject", "section", "updated_at"])
+            if add_tags:
+                question.tags.add(*tags)
+    return redirect("batch-detail", batch_id=batch_id)
 
 
 @require_GET

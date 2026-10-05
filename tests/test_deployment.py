@@ -78,7 +78,7 @@ def test_nginx_protects_all_locations_and_limits_uploads():
     server_block = config.split("server {", 1)[1]
     assert "auth_basic " in server_block
     assert "auth_basic_user_file /etc/nginx/.htpasswd-math-question-bank;" in server_block
-    assert "client_max_body_size 10M;" in server_block
+    assert "client_max_body_size 12M;" in server_block
     assert "location /static/" in server_block
     assert "location /media/" in server_block
     assert "location /" in server_block

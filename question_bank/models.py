@@ -77,6 +77,7 @@ class Question(TimeStampedModel):
     )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    batch_id = models.UUIDField(null=True, blank=True, db_index=True)
     subject = models.ForeignKey(
         Subject,
         on_delete=models.PROTECT,
@@ -162,6 +163,8 @@ class QuestionAttachment(TimeStampedModel):
     file = models.FileField(upload_to=question_attachment_upload_to)
     file_kind = models.CharField(max_length=20, choices=FILE_KIND_CHOICES, default="image")
     sort_order = models.PositiveIntegerField(default=0)
+    client_upload_id = models.UUIDField(null=True, blank=True, unique=True)
+    content_sha256 = models.CharField(max_length=64, null=True, blank=True)
 
     class Meta:
         ordering = ["sort_order", "id"]

@@ -178,6 +178,38 @@ class QuestionForm(forms.ModelForm):
             self._created_subject_ids = []
 
 
+class QuestionMetadataForm(forms.Form):
+    subject = forms.CharField(label="科目", max_length=100, required=False)
+    section = forms.CharField(label="章节", max_length=150, required=False)
+    tags = forms.ModelMultipleChoiceField(
+        label="标签", queryset=Tag.objects.none(), required=False,
+    )
+
+    def __init__(self, *args, instance=None, **kwargs):
+        self.instance = instance
+        super().__init__(*args, **kwargs)
+        self.fields["tags"].queryset = Tag.objects.filter(
+            archived=False, redirect_to__isnull=True
+        ).order_by("name", "id")
+        if instance is not None and not self.is_bound:
+            self.initial.update({
+                "subject": instance.subject.name if instance.subject else "",
+                "section": instance.section.name if instance.section else "",
+                "tags": instance.tags.values_list("pk", flat=True),
+            })
+
+    def clean(self):
+        cleaned = super().clean()
+        subject_name = (cleaned.get("subject") or "").strip()
+        section_name = (cleaned.get("section") or "").strip()
+        if section_name and not subject_name:
+            self.add_error("section", "填写章节前请先填写科目。")
+            return cleaned
+        cleaned["subject_name"] = subject_name
+        cleaned["section_name"] = section_name
+        return cleaned
+
+
 class KnowledgeCardForm(forms.ModelForm):
     subject = forms.CharField(label="科目", max_length=100)
     section = forms.CharField(label="章节", max_length=150, required=False)

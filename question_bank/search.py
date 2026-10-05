@@ -333,9 +333,13 @@ def build_question_queryset(params=None, *, queryset: QuerySet | None = None, no
     queryset = queryset or Question.objects.all()
     queryset = queryset.filter(deleted_at__isnull=True)
 
+    draft_values = parameter_values(params, "draft")
+    draft_only = bool(draft_values and draft_values[0].lower() in {"1", "true", "yes", "on"})
     include_archived = parameter_values(params, "include_archived", "archived")
-    if not include_archived or include_archived[0].lower() not in {"1", "true", "yes", "on"}:
+    if draft_only or not include_archived or include_archived[0].lower() not in {"1", "true", "yes", "on"}:
         queryset = queryset.filter(archived=False)
+    if draft_only:
+        queryset = queryset.filter(draft=True)
 
     keyword = (params.get("q") or params.get("keyword") or "").strip()
     if keyword:

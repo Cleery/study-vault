@@ -1,0 +1,55 @@
+{% extends "question_bank/base.html" %}
+{% load static %}
+{% block title %}整理批次 | 数学题库{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'question_bank/css/batch-entry.css' %}">{% endblock %}
+{% block content %}
+<section class="batch-page">
+  <header class="page-heading">
+    <div><p class="eyebrow">待整理草稿</p><h1>整理本批次</h1></div>
+    <a href="{% url 'batch-upload-page' %}?batch_id={{ batch_id }}" class="button">继续上传</a>
+  </header>
+  {% if bulk_error %}<p class="notice" role="alert">{{ bulk_error }}</p>{% endif %}
+  <form method="post" action="{% url 'batch-apply' batch_id=batch_id %}" class="bulk-panel" id="bulk-form">
+    {% csrf_token %}
+    <strong>批量应用到选中题目</strong>
+    <label><input type="checkbox" name="apply_subject"{% if bulk_data.apply_subject %} checked{% endif %}> 科目</label>
+    <input name="subject" list="batch-subject-options" maxlength="100" placeholder="科目" value="{{ bulk_data.subject|default:'' }}">
+    <label><input type="checkbox" name="apply_section"{% if bulk_data.apply_section %} checked{% endif %}> 章节</label>
+    <input name="section" list="batch-section-options" maxlength="150" placeholder="章节" value="{{ bulk_data.section|default:'' }}">
+    <label><input type="checkbox" name="add_tags"{% if bulk_data.add_tags %} checked{% endif %}> 添加标签</label>
+    <select name="tags" multiple aria-label="批量添加标签">{% for tag in tags %}<option value="{{ tag.pk }}"{% if tag.pk|stringformat:'s' in bulk_selected_tags %} selected{% endif %}>{{ tag.name }}</option>{% endfor %}</select>
+    <button class="button button--primary">应用</button>
+  </form>
+  <datalist id="batch-subject-options">{% for subject in subjects %}<option value="{{ subject.name }}">{% endfor %}</datalist>
+  <datalist id="batch-section-options">{% for section in sections %}<option value="{{ section.name }}">{% endfor %}</datalist>
+  <div class="batch-cards">
+    {% for question in questions %}
+      <article class="batch-card">
+        <label class="batch-card__select"><input type="checkbox" name="questions" form="bulk-form" value="{{ question.pk }}"{% if question.pk|stringformat:'s' in bulk_selected_ids %} checked{% endif %}>选择</label>
+        {% for attachment in question.attachments.all %}<img src="{{ attachment.file.url }}" alt="题目图片" loading="lazy">{% endfor %}
+        {% if metadata_question_id == question.pk %}
+          <p class="notice" role="alert">请检查本题输入。</p>
+        {% endif %}
+        <form method="post" action="{% url 'batch-metadata' batch_id=batch_id question_id=question.pk %}">
+          {% csrf_token %}
+          <label>科目
+            <input name="subject" list="batch-subject-options" maxlength="100" value="{% if metadata_question_id == question.pk %}{{ metadata_form.subject.value|default:'' }}{% elif question.subject %}{{ question.subject.name }}{% endif %}">
+          </label>
+          {% if metadata_question_id == question.pk %}{{ metadata_form.subject.errors }}{% endif %}
+          <label>章节
+            <input name="section" list="batch-section-options" maxlength="150" value="{% if metadata_question_id == question.pk %}{{ metadata_form.section.value|default:'' }}{% elif question.section %}{{ question.section.name }}{% endif %}">
+          </label>
+          {% if metadata_question_id == question.pk %}{{ metadata_form.section.errors }}{% endif %}
+          <label>标签
+            <select name="tags" multiple>
+              {% for tag in tags %}<option value="{{ tag.pk }}"{% if metadata_question_id == question.pk %}{% if tag.pk|stringformat:'s' in metadata_selected_tags %} selected{% endif %}{% elif tag in question.tags.all %} selected{% endif %}>{{ tag.name }}</option>{% endfor %}
+            </select>
+          </label>
+          {% if metadata_question_id == question.pk %}{{ metadata_form.tags.errors }}{% endif %}
+          <div class="batch-card__actions"><button class="button">保存</button><a href="{% url 'question-edit' question.pk %}">进入完整编辑</a></div>
+        </form>
+      </article>
+    {% empty %}<p>本批次暂无待整理草稿。</p>{% endfor %}
+  </div>
+</section>
+{% endblock %}
