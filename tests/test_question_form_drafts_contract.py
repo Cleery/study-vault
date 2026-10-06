@@ -31,3 +31,8 @@ def test_broadcast_channel_path_checks_local_storage_collision_before_key_use():
 
 def test_manual_restore_handles_rejected_restore_without_unhandled_rejection():
     assert "restore(draft).catch(reportFailure)" in SOURCE
+
+
+def test_solution_image_preview_is_wired_separately_from_question_queue():
+    assert "data-solution-image-input" in ATTACHMENT_SOURCE
+    assert "data-solution-preview" in ATTACHMENT_SOURCE

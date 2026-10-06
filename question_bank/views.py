@@ -120,7 +120,7 @@ def question_list(request):
         question.image_attachments = [
             attachment
             for attachment in question.attachments.all()
-            if attachment.file_kind == "image"
+            if attachment.file_kind == "image" and attachment.attachment_role == "question"
         ]
     pagination_params = request.GET.copy()
     pagination_params.pop("page", None)
@@ -343,7 +343,9 @@ def tag_suggestions(request):
 
 
 def _question_form_context(form, title, submitted_intent="", question=None, conflict=False, request=None):
-    existing_attachments = list(question.attachments.all()) if question and not question._state.adding else []
+    all_attachments = list(question.attachments.all()) if question and not question._state.adding else []
+    existing_attachments = [item for item in all_attachments if item.attachment_role == "question"]
+    solution_attachments = [item for item in all_attachments if item.attachment_role == "solution"]
     post = request.POST if request and request.method == "POST" else None
     removed_ids = set(post.getlist("remove_attachment")) if post is not None else set()
     attachment_controls = [
@@ -363,9 +365,12 @@ def _question_form_context(form, title, submitted_intent="", question=None, conf
         "question": question,
         "question_version": build_question_version(question) if question and not question._state.adding else "",
         "existing_attachments": existing_attachments,
+        "solution_attachments": solution_attachments,
         "attachment_controls": attachment_controls,
         "needs_upload_reselection": bool(
-            form.is_bound and request and request.FILES.getlist("attachments")
+            form.is_bound and request and (
+                request.FILES.getlist("attachments") or request.FILES.getlist("solution_attachments")
+            )
         ),
         "conflict": conflict,
         "subjects": Subject.objects.all(),
@@ -398,6 +403,15 @@ def _save_question(request, submitted_intent, pk=None):
             if not form.is_valid():
                 return form, question, False
             uploads = form.cleaned_data.get("attachments", [])
+            solution_uploads = form.cleaned_data.get("solution_attachments", [])
+            removed_solution_ids = request.POST.getlist("remove_solution_attachment")
+            existing_solution_ids = set(question.attachments.filter(attachment_role="solution").values_list("pk", flat=True)) if pk else set()
+            if len(removed_solution_ids) != len(set(removed_solution_ids)) or any(
+                not value.isdecimal() or int(value) not in existing_solution_ids
+                for value in removed_solution_ids
+            ):
+                form.add_error(None, "解答图片删除标记无效。")
+                return form, question, False
             try:
                 plan = parse_attachment_plan(request.POST, uploads, question)
             except AttachmentPlanValidationError as exc:
@@ -410,6 +424,21 @@ def _save_question(request, submitted_intent, pk=None):
                     question.save()
                     form.save_m2m()
                     apply_attachment_plan(question, uploads, plan, created_names)
+                    if removed_solution_ids:
+                        question.attachments.filter(
+                            attachment_role="solution", pk__in=removed_solution_ids
+                        ).delete()
+                    highest_order = question.attachments.order_by("-sort_order").values_list("sort_order", flat=True).first()
+                    for offset, upload in enumerate(solution_uploads, start=1):
+                        attachment = QuestionAttachment(
+                            question=question,
+                            file_kind="image",
+                            attachment_role="solution",
+                            sort_order=(highest_order if highest_order is not None else -1) + offset,
+                        )
+                        attachment.file.save(upload.name, upload, save=False)
+                        created_names.append(attachment.file.name)
+                        attachment.save()
             except AttachmentPlanValidationError as exc:
                 form.add_error(None, str(exc))
                 return form, question if pk else None, False
@@ -461,7 +490,12 @@ def question_detail(request, pk):
     question = get_object_or_404(
         Question.objects.prefetch_related("attachments", "knowledge_cards"), pk=pk
     )
-    context = {"question": question}
+    attachments = list(question.attachments.all())
+    context = {
+        "question": question,
+        "question_images": [item for item in attachments if item.attachment_role == "question"],
+        "solution_images": [item for item in attachments if item.attachment_role == "solution"],
+    }
     context.update(
         _markdown_context(
             question,

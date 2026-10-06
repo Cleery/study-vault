@@ -51,11 +51,11 @@
   <div class="workbench-grid">
     <section class="attachment-workspace" aria-labelledby="attachment-heading">
       <div class="workbench-section-heading">
-        <h2 id="attachment-heading">题图与附件</h2>
+        <h2 id="attachment-heading">题目图片</h2>
         <span data-attachment-count aria-live="polite"></span>
       </div>
       <div class="attachment-dropzone" data-attachment-dropzone>
-        <label for="{{ form.attachments.id_for_label }}">选择题图</label>
+        <label for="{{ form.attachments.id_for_label }}">选择题目图片</label>
         {{ form.attachments }}
         <small>PNG、JPEG、WebP，可一次选择多张图片，也可粘贴或拖入。</small>
         {{ form.attachments.errors }}
@@ -92,6 +92,26 @@
         {% endfor %}
       </ol>
       <div id="image-preview" class="new-image-preview" data-image-preview aria-live="polite"></div>
+      <div class="solution-upload-panel" data-solution-upload>
+        <div class="workbench-section-heading"><h2>解答图片</h2><span>可选，可多选</span></div>
+        <div class="attachment-dropzone attachment-dropzone--solution">
+          <label for="{{ form.solution_attachments.id_for_label }}">选择解答图片</label>
+          {{ form.solution_attachments }}
+          <small>可上传手写过程、参考答案或多张步骤图。</small>
+          {{ form.solution_attachments.errors }}
+        </div>
+        <ol class="solution-attachment-list" aria-label="已有解答图片">
+          {% for attachment in solution_attachments %}
+          <li class="attachment-row" data-solution-existing="{{ attachment.pk }}">
+            <div class="attachment-row__media"><img src="{{ attachment.file.url }}" alt="已有解答图 {{ forloop.counter }}" loading="lazy"></div>
+            <div class="attachment-row__details"><span class="attachment-row__name">{{ attachment.file.name }}</span>
+              <label class="attachment-row__remove"><input type="checkbox" name="remove_solution_attachment" value="{{ attachment.pk }}">删除</label>
+            </div>
+          </li>
+          {% endfor %}
+        </ol>
+        <div class="solution-attachment-list" data-solution-preview data-solution-new-preview aria-label="待上传解答图片" aria-live="polite"></div>
+      </div>
     </section>
 
     <div class="workbench-editor">

@@ -55,7 +55,7 @@ def _build_manifest():
         source = Path(obj.file.name)
         entities["attachments"].append({
             **_entity_base(obj), "question_id": _entity_id("question", obj.question_id), "path": f"attachments/{obj.question_id}/{obj.pk}_{source.name}",
-            "file_kind": obj.file_kind, "sort_order": obj.sort_order,
+            "file_kind": obj.file_kind, "attachment_role": obj.attachment_role, "sort_order": obj.sort_order,
         })
     for obj in KnowledgeCard.objects.all().order_by("pk"):
         entities["knowledge_cards"].append({
@@ -219,7 +219,10 @@ def _import_bundle(bundle, written_files):
         for data in entities["attachments"]:
             question_id = maps["question"][data["question_id"]]
             obj = QuestionAttachment.objects.filter(pk=data["id"]).first() or QuestionAttachment(question_id=question_id)
-            obj.question_id, obj.file_kind, obj.sort_order = question_id, data.get("file_kind", "image"), data.get("sort_order", 0)
+            obj.question_id = question_id
+            obj.file_kind = data.get("file_kind", "image")
+            obj.attachment_role = data.get("attachment_role", "question")
+            obj.sort_order = data.get("sort_order", 0)
             if data["path"] in archive.namelist():
                 attachment_name = Path(data["path"]).name
                 attachment_content = ContentFile(archive.read(data["path"]), name=attachment_name)

@@ -55,7 +55,7 @@ def parse_attachment_plan(post, uploads, question):
     existing_ids = set()
     if question.pk and not question._state.adding:
         existing_ids = set(
-            QuestionAttachment.objects.filter(question=question).values_list("pk", flat=True)
+            QuestionAttachment.objects.filter(question=question, attachment_role="question").values_list("pk", flat=True)
         )
 
     protocol = post.getlist("attachment_protocol") if "attachment_protocol" in post else []
@@ -117,7 +117,7 @@ def apply_attachment_plan(question, uploads, plan, created_names):
     with transaction.atomic():
         existing = {
             attachment.pk: attachment
-            for attachment in QuestionAttachment.objects.select_for_update().filter(question=question)
+            for attachment in QuestionAttachment.objects.select_for_update().filter(question=question, attachment_role="question")
         }
         retained_ids = {item.pk for item in plan.ordered_items if isinstance(item, ExistingAttachment)}
         upload_indexes = {item.index for item in plan.ordered_items if isinstance(item, NewUpload)}

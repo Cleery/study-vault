@@ -46,6 +46,10 @@ body:has(.question-workbench.is-enhanced) .form-mode-control { display:flex; }
 .attachment-row__remove { display:inline-flex; align-items:center; gap:5px; min-height:36px; margin:0; color:#a54f3d; font-size:.82rem; }
 .attachment-row__remove input { margin:0; accent-color:#bd5e48; }
 .new-image-preview { min-width:0; }
+.solution-attachment-list { display:grid; gap:10px; margin:10px 0 0; padding:0; list-style:none; }
+.solution-attachment-list .attachment-row { grid-template-columns:minmax(90px,25%) minmax(0,1fr); }
+.solution-attachment-list .attachment-row__media img { aspect-ratio:4 / 3; }
+.attachment-row__remove-button { align-self:flex-start; min-height:34px; margin-top:8px; color:#a54f3d; border-color:#e3b2a5; background:#fff5f1; }
 .question-form-tabs { display:none; gap:4px; margin-bottom:14px; border-bottom:1px solid var(--line); }
 .question-workbench.is-enhanced[data-mode=complete] .question-form-tabs { display:flex; }
 .question-form-tabs button { min-height:42px; padding:7px 13px; border:0; border-bottom:3px solid transparent; border-radius:0; color:var(--muted); background:transparent; }

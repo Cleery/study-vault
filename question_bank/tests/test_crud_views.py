@@ -214,6 +214,19 @@ def test_question_creation_accepts_markdown_latex_and_ordered_images(client, sub
 
 
 @pytest.mark.django_db
+def test_question_creation_saves_question_and_solution_images(client, settings, tmp_path):
+    settings.MEDIA_ROOT = tmp_path
+    response = client.post(reverse("question-create"), {
+        "save_intent": "draft",
+        "attachments": image_file("question.png", (255, 0, 0)),
+        "solution_attachments": image_file("solution.png", (0, 0, 255)),
+    })
+    assert response.status_code == 302
+    question = Question.objects.get()
+    assert set(question.attachments.values_list("attachment_role", flat=True)) == {"question", "solution"}
+
+
+@pytest.mark.django_db
 def test_question_creation_creates_new_subject_and_section_from_text(client):
     response = client.post(
         reverse("question-create"),
@@ -529,6 +542,48 @@ def test_question_detail_shows_links_and_attachment_order(client, subject):
     assert "详情题" in content
     assert "题目附件 1" in content
     assert list(question.attachments.values_list("sort_order", flat=True)) == [0, 1]
+
+
+@pytest.mark.django_db
+def test_edit_and_detail_separate_question_and_solution_images(client, subject, settings, tmp_path):
+    settings.MEDIA_ROOT = tmp_path / "media"
+    question = Question.objects.create(subject=subject, title="双图区", draft=False)
+    question_image = QuestionAttachment.objects.create(
+        question=question, file=image_file("question.png", (1, 2, 3)), sort_order=0,
+    )
+    solution_image = QuestionAttachment.objects.create(
+        question=question, file=image_file("answer.png", (4, 5, 6)),
+        attachment_role="solution", sort_order=1,
+    )
+
+    edit = client.get(reverse("question-edit", args=[question.pk]))
+    detail = client.get(reverse("question-detail", args=[question.pk]))
+
+    assert [item["attachment"].pk for item in edit.context["attachment_controls"]] == [question_image.pk]
+    assert [item.pk for item in edit.context["solution_attachments"]] == [solution_image.pk]
+    queue_html = edit.content.decode().split('data-attachment-queue', 1)[1].split('</ol>', 1)[0]
+    assert f'data-attachment-id="{solution_image.pk}"' not in queue_html
+    assert [item.pk for item in detail.context["question_images"]] == [question_image.pk]
+    assert [item.pk for item in detail.context["solution_images"]] == [solution_image.pk]
+
+
+@pytest.mark.django_db
+def test_edit_can_remove_existing_solution_image(client, subject, settings, tmp_path):
+    settings.MEDIA_ROOT = tmp_path / "media"
+    question = Question.objects.create(subject=subject, title="删除解答图", draft=False)
+    solution = QuestionAttachment.objects.create(
+        question=question, file=image_file("answer.png", (4, 5, 6)),
+        attachment_role="solution", sort_order=0,
+    )
+    version = client.get(reverse("question-edit", args=[question.pk])).context["question_version"]
+
+    response = client.post(reverse("question-edit", args=[question.pk]), {
+        "title": question.title, "subject": subject.name, "save_intent": "publish",
+        "question_version": version, "remove_solution_attachment": str(solution.pk),
+    })
+
+    assert response.status_code == 302
+    assert not QuestionAttachment.objects.filter(pk=solution.pk).exists()
 
 
 @pytest.mark.django_db

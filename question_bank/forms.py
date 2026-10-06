@@ -31,6 +31,11 @@ class QuestionForm(forms.ModelForm):
         label="图片附件",
         widget=MultipleFileInput(attrs={"data-image-input": "true", "data-preview": "image-preview"}),
     )
+    solution_attachments = MultipleFileField(
+        required=False,
+        label="解答图片",
+        widget=MultipleFileInput(attrs={"data-solution-image-input": "true"}),
+    )
     mastery = forms.ChoiceField(
         choices=Question.MASTERY_CHOICES,
         required=False,
@@ -51,6 +56,7 @@ class QuestionForm(forms.ModelForm):
             "draft",
             "tags",
             "knowledge_cards",
+            "solution_attachments",
         ]
         widgets = {
             "draft": forms.HiddenInput(),
@@ -106,6 +112,16 @@ class QuestionForm(forms.ModelForm):
 
     def clean_attachments(self):
         uploads = self.cleaned_data.get("attachments", [])
+        for upload in uploads:
+            try:
+                validate_image_upload(upload)
+            except ValidationError as exc:
+                reason = "; ".join(str(message) for message in exc.messages)
+                raise ValidationError(f"{upload.name}：{reason}") from exc
+        return uploads
+
+    def clean_solution_attachments(self):
+        uploads = self.cleaned_data.get("solution_attachments", [])
         for upload in uploads:
             try:
                 validate_image_upload(upload)

@@ -18,6 +18,7 @@ def _question_payload(question):
             "id": attachment.pk,
             "updated_at": _utc_iso(attachment.updated_at),
             "type": attachment.file_kind,
+            "role": attachment.attachment_role,
             "filename": Path(attachment.file.name).name,
             "order": attachment.sort_order,
         }

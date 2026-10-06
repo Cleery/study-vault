@@ -413,6 +413,8 @@ export async function initializeDrafts(root, editor, attachments, baseline) {
   root.querySelector('[data-attachment-queue]')?.addEventListener('drop', scheduleSave);
   root.querySelector('[data-attachment-queue]')?.addEventListener('keydown', scheduleSave);
   root.querySelector('[data-attachment-dropzone]')?.addEventListener('drop', scheduleSave);
+  root.querySelector('[data-solution-image-input]')?.addEventListener('change', scheduleSave);
+  root.querySelector('[data-solution-preview]')?.addEventListener('click', scheduleSave);
   root.addEventListener('paste', scheduleSave);
   document.querySelectorAll('[data-form-mode], [data-form-tabs] [role="tab"]').forEach(button => button.addEventListener('click', scheduleSave));
   root.querySelector('[data-form-tabs]')?.addEventListener('keydown', scheduleSave);

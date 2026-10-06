@@ -70,6 +70,20 @@ def test_question_can_be_soft_deleted_and_attachments_keep_order(subject):
 
 
 @pytest.mark.django_db
+def test_question_attachment_supports_question_and_solution_roles(subject):
+    question = Question.objects.create(subject=subject, title="带解答图", draft=True)
+    question_image = QuestionAttachment.objects.create(
+        question=question, file="questions/question.png", file_kind="image", sort_order=0,
+    )
+    solution_image = QuestionAttachment.objects.create(
+        question=question, file="questions/solution.png", file_kind="image", sort_order=1,
+        attachment_role="solution",
+    )
+    assert question_image.attachment_role == "question"
+    assert solution_image.attachment_role == "solution"
+
+
+@pytest.mark.django_db
 def test_knowledge_card_requires_name_subject_and_type(subject, section):
     card = KnowledgeCard(section=section)
     with pytest.raises(ValidationError):

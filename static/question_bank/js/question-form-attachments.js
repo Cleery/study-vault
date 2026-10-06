@@ -239,3 +239,54 @@ export function initializeAttachmentQueue(root) {
     restoreState
   };
 }
+
+export function initializeSolutionPreview(root) {
+  const input = root.querySelector('[data-solution-image-input]');
+  const preview = root.querySelector('[data-solution-preview][data-solution-new-preview]');
+  if (!input || !preview || typeof DataTransfer === 'undefined') return null;
+  let files = [];
+
+  function sync() {
+    const transfer = new DataTransfer();
+    files.forEach(file => transfer.items.add(file));
+    input.files = transfer.files;
+    preview.replaceChildren();
+    files.forEach((file, index) => {
+      const row = document.createElement('li');
+      row.className = 'attachment-row';
+      const media = document.createElement('div');
+      media.className = 'attachment-row__media';
+      const image = document.createElement('img');
+      image.src = URL.createObjectURL(file);
+      image.alt = `待上传解答图 ${index + 1}`;
+      image.loading = 'lazy';
+      media.append(image);
+      const details = document.createElement('div');
+      details.className = 'attachment-row__details';
+      const name = document.createElement('span');
+      name.className = 'attachment-row__name';
+      name.textContent = file.name;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'attachment-row__remove-button';
+      remove.dataset.solutionRemove = String(index);
+      remove.textContent = '移除';
+      remove.setAttribute('aria-label', `移除 ${file.name}`);
+      details.append(name, remove);
+      row.append(media, details);
+      preview.append(row);
+    });
+  }
+
+  input.addEventListener('change', () => {
+    files = [...files, ...input.files];
+    sync();
+  });
+  preview.addEventListener('click', event => {
+    const button = event.target.closest('[data-solution-remove]');
+    if (!button) return;
+    files.splice(Number(button.dataset.solutionRemove), 1);
+    sync();
+  });
+  return {getFiles: () => [...files]};
+}

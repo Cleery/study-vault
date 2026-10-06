@@ -151,6 +151,10 @@ def question_attachment_upload_to(instance, filename):
 
 
 class QuestionAttachment(TimeStampedModel):
+    ATTACHMENT_ROLE_CHOICES = (
+        ("question", "题目图片"),
+        ("solution", "解答图片"),
+    )
     FILE_KIND_CHOICES = (
         ("image", "图片"),
         ("document", "文档"),
@@ -163,6 +167,9 @@ class QuestionAttachment(TimeStampedModel):
     file = models.FileField(upload_to=question_attachment_upload_to)
     file_kind = models.CharField(max_length=20, choices=FILE_KIND_CHOICES, default="image")
     sort_order = models.PositiveIntegerField(default=0)
+    attachment_role = models.CharField(
+        max_length=20, choices=ATTACHMENT_ROLE_CHOICES, default="question"
+    )
     client_upload_id = models.UUIDField(null=True, blank=True, unique=True)
     content_sha256 = models.CharField(max_length=64, null=True, blank=True)
 

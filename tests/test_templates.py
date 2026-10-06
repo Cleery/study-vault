@@ -274,6 +274,22 @@ def test_question_list_omits_image_region_when_question_has_no_images(
     assert 'class="question-attachments"' not in response.content.decode()
 
 
+@pytest.mark.django_db
+def test_question_list_never_previews_solution_images(client, subject, settings, tmp_path):
+    settings.MEDIA_ROOT = tmp_path / "media"
+    item = Question.objects.create(subject=subject, title="隐藏解答图", draft=False)
+    QuestionAttachment.objects.create(
+        question=item, file=image_file("answer.png", "white"),
+        attachment_role="solution", sort_order=0,
+    )
+
+    response = client.get(reverse("question-list"), {"q": "隐藏解答图"})
+
+    assert response.status_code == 200
+    assert response.context["questions"][0].image_attachments == []
+    assert 'class="question-attachments"' not in response.content.decode()
+
+
 def test_search_page_css_defines_layout_and_responsive_contract():
     css = (Path(__file__).parents[1] / "static/question_bank/css/app.css").read_text(
         encoding="utf-8"
@@ -409,9 +425,11 @@ def test_question_workbench_renders_progressive_editor_contract(client):
     for name in (
         "subject", "section", "title", "statement", "personal_solution",
         "reference_solution", "error_note", "mastery", "tags",
-        "knowledge_cards", "attachments",
+        "knowledge_cards", "attachments", "solution_attachments",
     ):
         assert f'name="{name}"' in body
+    assert "题目图片" in body
+    assert "解答图片" in body
     assert 'name="attachment_protocol" value="enhanced" disabled' in body
     assert 'name="attachment_order"' not in body
     assert 'disabled data-ocr' in body

@@ -1,5 +1,5 @@
 import {initializeEditor} from './question-form-editor.js';
-import {initializeAttachmentQueue} from './question-form-attachments.js';
+import {initializeAttachmentQueue, initializeSolutionPreview} from './question-form-attachments.js';
 import {initializeDrafts, serverBaseline} from './question-form-drafts.js';
 
 const root = document.querySelector('[data-question-form]');
@@ -11,12 +11,13 @@ if (root) {
   });
   const baseline = serverBaseline(root);
   const attachments = initializeAttachmentQueue(root);
+  const solutionPreview = initializeSolutionPreview(root);
   if (attachments) {
     const editor = initializeEditor(root);
     root.classList.add('is-enhanced');
-    window.QuestionFormWorkbench = Object.freeze({editor, attachments});
+    window.QuestionFormWorkbench = Object.freeze({editor, attachments, solutionPreview});
     initializeDrafts(root, editor, attachments, baseline).then(drafts => {
-      window.QuestionFormWorkbench = Object.freeze({editor, attachments, drafts});
+      window.QuestionFormWorkbench = Object.freeze({editor, attachments, solutionPreview, drafts});
     }).catch(() => {
       const status = document.querySelector('[data-draft-status]');
       if (status) status.textContent = '本地草稿不可用，可继续提交表单。';

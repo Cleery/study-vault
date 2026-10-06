@@ -26,7 +26,7 @@
     {% for question in questions %}
       <article class="batch-card">
         <label class="batch-card__select"><input type="checkbox" name="questions" form="bulk-form" value="{{ question.pk }}"{% if question.pk|stringformat:'s' in bulk_selected_ids %} checked{% endif %}>选择</label>
-        {% for attachment in question.attachments.all %}<img src="{{ attachment.file.url }}" alt="题目图片" loading="lazy">{% endfor %}
+        {% for attachment in question.attachments.all %}{% if attachment.attachment_role == "question" %}<img src="{{ attachment.file.url }}" alt="题目图片" loading="lazy">{% endif %}{% endfor %}
         {% if metadata_question_id == question.pk %}
           <p class="notice" role="alert">请检查本题输入。</p>
         {% endif %}
