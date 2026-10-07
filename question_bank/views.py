@@ -17,6 +17,7 @@ from .forms import KnowledgeCardForm, QuestionAnalysisCorrectionForm, QuestionFo
 from .markdown import render_markdown
 from .models import KnowledgeCard, Question, QuestionAttachment, Section, Subject, Tag
 from .ai.config import AIConfig
+from .ai.actions import InvalidCandidate, StaleAnalysis, review_candidate
 from .ai.service import analyze_question
 from .batch_entry import UploadConflict, create_batch_draft
 from django.core.exceptions import ValidationError
@@ -513,6 +514,24 @@ def _analysis_items(analysis, field):
     return value.get("items", []) if isinstance(value, dict) else []
 
 
+def _review_items(analysis, field, candidate_type):
+    items = []
+    for raw_item in _analysis_items(analysis, field):
+        item = dict(raw_item)
+        if candidate_type == "knowledge_point":
+            item["candidate_key"] = str(item.get("matched_card_id") or "")
+        elif candidate_type == "tag":
+            name = " ".join(str(item.get("name") or "").split())
+            item["candidate_key"] = f"{item.get('category', '')}:{name}"
+        else:
+            name = " ".join(str(item.get("name") or "").split())
+            card_type = item.get("card_type", item.get("type", "other"))
+            item["candidate_key"] = f"{card_type}:{name}"
+            item["display_type"] = card_type
+        items.append(item)
+    return items
+
+
 def _analysis_context(question, *, form=None, conflict_message=""):
     latest = question.latest_ai_analysis
     version = latest.version if latest else 0
@@ -529,9 +548,9 @@ def _analysis_context(question, *, form=None, conflict_message=""):
         "correction_form": form,
         "question_images": [item for item in attachments if item.attachment_role == "question"],
         "solution_images": [item for item in attachments if item.attachment_role == "solution"],
-        "knowledge_candidates": _analysis_items(latest, "knowledge_points"),
-        "tag_suggestions": _analysis_items(latest, "suggested_tags"),
-        "missing_cards": _analysis_items(latest, "missing_cards"),
+        "knowledge_candidates": _review_items(latest, "knowledge_points", "knowledge_point"),
+        "tag_suggestions": _review_items(latest, "suggested_tags", "tag"),
+        "missing_cards": _review_items(latest, "missing_cards", "missing_card"),
         "ai_enabled": AIConfig.from_env().enabled,
         "conflict_message": conflict_message,
         "current_version": version,
@@ -606,6 +625,31 @@ def question_analysis_correct(request, pk):
             )
         form.save()
     analyze_question(question)
+    return redirect("question-analysis", pk=question.pk)
+
+
+@require_POST
+def question_analysis_review(request, pk):
+    with transaction.atomic():
+        question = get_object_or_404(
+            Question.objects.select_for_update(), pk=pk, deleted_at__isnull=True
+        )
+        if not _analysis_request_is_current(request, question):
+            return _analysis_conflict_response(request, question)
+        latest = question.latest_ai_analysis
+        if latest is None:
+            return _analysis_conflict_response(request, question)
+        try:
+            review_candidate(
+                latest,
+                request.POST.get("candidate_type", ""),
+                request.POST.get("candidate_key", ""),
+                request.POST.get("action", ""),
+            )
+        except StaleAnalysis:
+            return _analysis_conflict_response(request, question)
+        except InvalidCandidate as exc:
+            return HttpResponseBadRequest(str(exc))
     return redirect("question-analysis", pk=question.pk)
 
 

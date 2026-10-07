@@ -241,6 +241,12 @@ class QuestionAIAnalysisAction(TimeStampedModel):
 
     class Meta:
         ordering = ["created_at", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["analysis", "action_type", "candidate_type", "candidate_key"],
+                name="unique_ai_analysis_candidate_action",
+            )
+        ]
         indexes = [
             models.Index(fields=["analysis", "candidate_type", "candidate_key"]),
             models.Index(fields=["action_type", "-created_at"]),
@@ -248,6 +254,50 @@ class QuestionAIAnalysisAction(TimeStampedModel):
 
     def __str__(self):
         return f"{self.get_action_type_display()} · {self.candidate_key}"
+
+
+class MissingKnowledgeCardSuggestion(TimeStampedModel):
+    """A reviewed request to create a card, kept outside the formal card library."""
+
+    STATUS_PENDING = "pending"
+    STATUS_DISMISSED = "dismissed"
+    STATUS_CONVERTED = "converted"
+    STATUS_CHOICES = (
+        (STATUS_PENDING, "待建立"),
+        (STATUS_DISMISSED, "已忽略"),
+        (STATUS_CONVERTED, "已建立"),
+    )
+
+    analysis = models.ForeignKey(
+        QuestionAIAnalysis,
+        on_delete=models.CASCADE,
+        related_name="missing_card_suggestions",
+    )
+    candidate_key = models.CharField(max_length=255)
+    name = models.CharField(max_length=255)
+    card_type = models.CharField(max_length=50, default="other")
+    reason = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    created_card = models.ForeignKey(
+        "KnowledgeCard",
+        on_delete=models.SET_NULL,
+        related_name="source_suggestions",
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["analysis", "candidate_key"],
+                name="unique_missing_card_suggestion_candidate",
+            )
+        ]
+        indexes = [models.Index(fields=["status", "created_at"])]
+
+    def __str__(self):
+        return self.name
 
 
 def question_attachment_upload_to(instance, filename):

@@ -195,6 +195,60 @@ def test_stale_analysis_correction_is_rejected(client, subject):
 
 
 @pytest.mark.django_db
+def test_analysis_review_rejects_old_version_with_conflict(client, subject):
+    question = Question.objects.create(subject=subject, title="过期审核")
+    card = KnowledgeCard.objects.create(subject=subject, name="介值定理", type="theorem")
+    old = QuestionAIAnalysis.objects.create(
+        question=question,
+        version=1,
+        input_fingerprint="1" * 64,
+        knowledge_points={"items": [{"name": card.name, "matched_card_id": str(card.pk)}]},
+    )
+    QuestionAIAnalysis.objects.create(
+        question=question,
+        version=2,
+        input_fingerprint="2" * 64,
+    )
+
+    response = client.post(
+        reverse("question-analysis-review", args=[question.pk]),
+        {
+            "analysis_version": old.version,
+            "input_fingerprint": old.input_fingerprint,
+            "candidate_type": "knowledge_point",
+            "candidate_key": str(card.pk),
+            "action": "confirm",
+        },
+    )
+
+    assert response.status_code == 409
+    assert question.knowledge_cards.count() == 0
+
+
+@pytest.mark.django_db
+def test_analysis_page_exposes_working_review_forms(client, subject):
+    question = Question.objects.create(subject=subject, title="审核按钮")
+    card = KnowledgeCard.objects.create(subject=subject, name="夹逼准则", type="theorem")
+    QuestionAIAnalysis.objects.create(
+        question=question,
+        version=1,
+        input_fingerprint="3" * 64,
+        knowledge_points={"items": [{"name": card.name, "matched_card_id": str(card.pk), "confidence": 0.9}]},
+        suggested_tags={"items": [{"name": "放缩", "category": "method", "confidence": 0.8}]},
+        missing_cards={"items": [{"name": "局部放缩", "card_type": "other", "confidence": 0.7}]},
+    )
+
+    body = client.get(reverse("question-analysis", args=[question.pk])).content.decode()
+
+    assert reverse("question-analysis-review", args=[question.pk]) in body
+    assert 'name="candidate_key" value="method:放缩"' in body
+    assert 'name="candidate_key" value="other:局部放缩"' in body
+    assert "确认关联" in body
+    assert "加入待建立" in body
+    assert "disabled" not in body
+
+
+@pytest.mark.django_db
 def test_new_question_cancel_returns_to_list_and_publish_label_is_create(client):
     response = client.get(reverse("question-create"))
     body = response.content.decode()

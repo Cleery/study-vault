@@ -16,6 +16,7 @@ urlpatterns = [
     path("questions/<uuid:pk>/analysis/", views.question_analysis, name="question-analysis"),
     path("questions/<uuid:pk>/analysis/start/", views.question_analysis_start, name="question-analysis-start"),
     path("questions/<uuid:pk>/analysis/correct/", views.question_analysis_correct, name="question-analysis-correct"),
+    path("questions/<uuid:pk>/analysis/review/", views.question_analysis_review, name="question-analysis-review"),
     path("questions/<uuid:pk>/archive/", views.question_archive, name="question-archive"),
     path("tags/", views.tag_manage, name="tag-manage"),
     path("tags/suggestions/", views.tag_suggestions, name="tag-suggestions"),

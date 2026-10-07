@@ -46,7 +46,9 @@ def test_question_analysis_template_has_versioned_post_contract():
     assert 'name="input_fingerprint"' in template
     assert "data-question-analysis" in template
     assert "question-analysis.js" in template
-    assert "确认功能将在下一阶段开放" in template
+    assert "question-analysis-review" in template
+    assert 'name="candidate_key"' in template
+    assert "确认关联" in template
 
 
 @pytest.mark.django_db

@@ -1,6 +1,13 @@
 import pytest
 
-from question_bank.models import KnowledgeCard, Question, QuestionAIAnalysis
+from question_bank.models import (
+    KnowledgeCard,
+    MissingKnowledgeCardSuggestion,
+    Question,
+    QuestionAIAnalysis,
+    QuestionAIAnalysisAction,
+    Tag,
+)
 
 
 @pytest.fixture
@@ -161,3 +168,150 @@ def test_old_analysis_cannot_write_back_after_newer_version_exists(subject):
     assert old.knowledge_points == {}
     assert question.latest_ai_analysis.version == 2
     assert question.ai_status != Question.AI_STATUS_AWAITING_REVIEW
+
+
+def _review_analysis(question, *, knowledge=None, tags=None, missing=None):
+    return QuestionAIAnalysis.objects.create(
+        question=question,
+        version=1,
+        input_fingerprint="f" * 64,
+        status=Question.AI_STATUS_AWAITING_REVIEW,
+        knowledge_points={"items": knowledge or []},
+        suggested_tags={"items": tags or []},
+        missing_cards={"items": missing or []},
+    )
+
+
+@pytest.mark.django_db
+def test_confirming_knowledge_candidate_is_idempotent(subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="关联知识点")
+    card = KnowledgeCard.objects.create(subject=subject, name="介值定理", type="theorem")
+    analysis = _review_analysis(
+        question,
+        knowledge=[{"name": card.name, "matched_card_id": str(card.pk), "confidence": 0.96}],
+    )
+
+    review_candidate(analysis, "knowledge_point", str(card.pk), "confirm")
+    review_candidate(analysis, "knowledge_point", str(card.pk), "confirm")
+
+    assert list(question.knowledge_cards.all()) == [card]
+    assert QuestionAIAnalysisAction.objects.filter(
+        analysis=analysis,
+        candidate_type="knowledge_point",
+        candidate_key=str(card.pk),
+        action_type="confirm",
+    ).count() == 1
+
+
+@pytest.mark.django_db
+def test_ignoring_knowledge_candidate_does_not_link_it(subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="忽略知识点")
+    card = KnowledgeCard.objects.create(subject=subject, name="夹逼准则", type="theorem")
+    analysis = _review_analysis(
+        question,
+        knowledge=[{"name": card.name, "matched_card_id": str(card.pk), "confidence": 0.8}],
+    )
+
+    review_candidate(analysis, "knowledge_point", str(card.pk), "ignore")
+
+    assert question.knowledge_cards.count() == 0
+    assert analysis.actions.filter(action_type="ignore", candidate_key=str(card.pk)).exists()
+
+
+@pytest.mark.django_db
+def test_revoking_knowledge_candidate_removes_link_and_records_action(subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="撤销知识点")
+    card = KnowledgeCard.objects.create(subject=subject, name="罗尔定理", type="theorem")
+    analysis = _review_analysis(
+        question,
+        knowledge=[{"name": card.name, "matched_card_id": str(card.pk), "confidence": 0.93}],
+    )
+    question.knowledge_cards.add(card)
+
+    review_candidate(analysis, "knowledge_point", str(card.pk), "revoke")
+
+    assert question.knowledge_cards.count() == 0
+    assert analysis.actions.filter(action_type="revoke", candidate_key=str(card.pk)).exists()
+
+
+@pytest.mark.django_db
+def test_tag_suggestion_only_becomes_formal_after_confirmation(subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="确认标签")
+    analysis = _review_analysis(
+        question,
+        tags=[{"name": "  放缩  ", "category": "method", "confidence": 0.9}],
+    )
+    key = "method:放缩"
+
+    assert Tag.objects.filter(name="放缩").count() == 0
+    review_candidate(analysis, "tag", key, "confirm")
+
+    tag = Tag.objects.get(name="放缩")
+    assert tag.kind == "method"
+    assert list(question.tags.all()) == [tag]
+
+
+@pytest.mark.django_db
+def test_unknown_tag_category_is_rejected_without_creating_tag(subject):
+    from question_bank.ai.actions import InvalidCandidate, review_candidate
+
+    question = Question.objects.create(subject=subject, title="未知标签")
+    analysis = _review_analysis(
+        question,
+        tags=[{"name": "越权类别", "category": "unknown", "confidence": 0.9}],
+    )
+
+    with pytest.raises(InvalidCandidate):
+        review_candidate(analysis, "tag", "unknown:越权类别", "confirm")
+
+    assert Tag.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_tag_category_conflict_is_rejected_without_linking_existing_tag(subject):
+    from question_bank.ai.actions import InvalidCandidate, review_candidate
+
+    question = Question.objects.create(subject=subject, title="标签类别冲突")
+    existing = Tag.objects.create(name="放缩", kind="custom")
+    analysis = _review_analysis(
+        question,
+        tags=[{"name": "放缩", "category": "method", "confidence": 0.9}],
+    )
+
+    with pytest.raises(InvalidCandidate):
+        review_candidate(analysis, "tag", "method:放缩", "confirm")
+
+    assert not question.tags.filter(pk=existing.pk).exists()
+
+
+@pytest.mark.django_db
+def test_missing_card_confirmation_creates_pending_suggestion_not_formal_card(subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="待建卡片")
+    analysis = _review_analysis(
+        question,
+        missing=[{
+            "name": "局部放缩技巧",
+            "card_type": "other",
+            "confidence": 0.72,
+            "reason": "解答使用了局部估计",
+            "proof": "模型生成的证明不应发布",
+        }],
+    )
+
+    review_candidate(analysis, "missing_card", "other:局部放缩技巧", "confirm")
+
+    suggestion = MissingKnowledgeCardSuggestion.objects.get(analysis=analysis)
+    assert suggestion.status == MissingKnowledgeCardSuggestion.STATUS_PENDING
+    assert suggestion.name == "局部放缩技巧"
+    assert suggestion.reason == "解答使用了局部估计"
+    assert KnowledgeCard.objects.count() == 0
