@@ -87,6 +87,18 @@ def _keyword_candidates(question: Question, cards: Iterable[KnowledgeCard]) -> l
     return candidates
 
 
+def _confidence_band(value: Any, config: AIConfig) -> str:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence >= config.auto_link_threshold:
+        return "auto"
+    if confidence >= config.review_threshold:
+        return "review"
+    return "low"
+
+
 def _new_version(question: Question, fingerprint: str) -> int:
     latest = question.ai_analyses.order_by("-version").first()
     return (latest.version if latest else 0) + 1
@@ -203,6 +215,29 @@ def purge_expired_raw_responses(
         Q(completed_at__lt=cutoff)
         | Q(completed_at__isnull=True, updated_at__lt=cutoff)
     ).exclude(raw_response={}).update(raw_response={}, updated_at=timezone.now())
+
+
+def _auto_link_high_confidence(analysis: QuestionAIAnalysis, config: AIConfig) -> None:
+    """Create reversible ownership only for high-confidence existing cards."""
+
+    from .actions import InvalidCandidate, review_candidate
+
+    if analysis.status != Question.AI_STATUS_AWAITING_REVIEW:
+        return
+    for item in (analysis.knowledge_points or {}).get("items", []):
+        if not isinstance(item, dict):
+            continue
+        matched_card_id = item.get("matched_card_id")
+        try:
+            confidence = float(item.get("confidence", 0))
+        except (TypeError, ValueError):
+            continue
+        if not matched_card_id or confidence < config.auto_link_threshold:
+            continue
+        try:
+            review_candidate(analysis, "knowledge_point", str(matched_card_id), "confirm")
+        except InvalidCandidate:
+            continue
 
 
 def analyze_question(
@@ -354,7 +389,25 @@ def analyze_question(
         merged = {item["matched_card_id"]: item for item in keyword_items}
         for item in result.knowledge_points:
             if item.matched_card_id:
-                merged[item.matched_card_id] = item.to_dict()
+                candidate = item.to_dict()
+                candidate["confidence_band"] = _confidence_band(
+                    candidate.get("confidence"), config
+                )
+                merged[item.matched_card_id] = candidate
+        suggested_tags = []
+        for item in result.suggested_tags:
+            candidate = item.to_dict()
+            candidate["confidence_band"] = _confidence_band(
+                candidate.get("confidence"), config
+            )
+            suggested_tags.append(candidate)
+        missing_cards = []
+        for item in result.missing_cards:
+            candidate = item.to_dict()
+            candidate["confidence_band"] = _confidence_band(
+                candidate.get("confidence"), config
+            )
+            missing_cards.append(candidate)
         with transaction.atomic():
             current_question = Question.objects.select_for_update().get(pk=question.pk)
             current_fingerprint = _fingerprint(
@@ -396,8 +449,8 @@ def analyze_question(
                 recognized_statement=result.recognized_statement,
                 recognized_solution=result.recognized_solution,
                 knowledge_points={"items": list(merged.values())},
-                suggested_tags={"items": [item.to_dict() for item in result.suggested_tags]},
-                missing_cards={"items": [item.to_dict() for item in result.missing_cards]},
+                suggested_tags={"items": suggested_tags},
+                missing_cards={"items": missing_cards},
                 raw_response=_bounded_raw_response(
                     raw_response,
                     secret=config.api_key,
@@ -418,6 +471,8 @@ def analyze_question(
             ).update(
                 ai_status=result.status.value,
             )
+        analysis.refresh_from_db()
+        _auto_link_high_confidence(analysis, config)
         analysis.refresh_from_db()
         return analysis
     except Exception:

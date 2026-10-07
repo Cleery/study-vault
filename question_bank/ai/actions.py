@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from django.db import IntegrityError, OperationalError, transaction
+from django.utils import timezone
 
 from question_bank.models import (
     AIReviewOwnership,
@@ -283,6 +284,37 @@ def _review_missing(analysis, candidate_key, action, item):
     return _record_action(analysis, action, "missing_card", candidate_key, item)
 
 
+def _maybe_complete_analysis(analysis: QuestionAIAnalysis) -> None:
+    """Mark review complete once every candidate has an action."""
+
+    candidate_keys = []
+    for candidate_type, field in (
+        ("knowledge_point", "knowledge_points"),
+        ("tag", "suggested_tags"),
+        ("missing_card", "missing_cards"),
+    ):
+        candidate_keys.extend(
+            (candidate_type, _item_key(candidate_type, item))
+            for item in _items(analysis, field)
+            if _item_key(candidate_type, item)
+        )
+    if not candidate_keys:
+        return
+    handled = set(
+        analysis.actions.values_list("candidate_type", "candidate_key").distinct()
+    )
+    if not all(candidate in handled for candidate in candidate_keys):
+        return
+    QuestionAIAnalysis.objects.filter(
+        pk=analysis.pk,
+        status=Question.AI_STATUS_AWAITING_REVIEW,
+    ).update(status=Question.AI_STATUS_COMPLETED, updated_at=timezone.now())
+    Question.objects.filter(
+        pk=analysis.question_id,
+        ai_status=Question.AI_STATUS_AWAITING_REVIEW,
+    ).update(ai_status=Question.AI_STATUS_COMPLETED, updated_at=timezone.now())
+
+
 @transaction.atomic
 def review_candidate(
     analysis: QuestionAIAnalysis,
@@ -318,6 +350,7 @@ def review_candidate(
     if action == "ignore" and previous and previous.action_type == "revoke":
         raise InvalidCandidate("已撤销的候选不能再忽略。")
     if action == "revoke" and previous and previous.action_type == "revoke":
+        _maybe_complete_analysis(locked_analysis)
         return previous
     if action == "revoke" and (previous is None or previous.action_type != "confirm"):
         raise InvalidCandidate("只有已确认的候选才能撤销。")
@@ -340,16 +373,22 @@ def review_candidate(
             else False
         )
         if relation_exists:
+            _maybe_complete_analysis(locked_analysis)
             return previous
     if action == "confirm" and previous and previous.action_type == "ignore":
         previous.delete()
     if action == "ignore":
-        return _record_action(locked_analysis, action, candidate_type, candidate_key, item)
+        result = _record_action(locked_analysis, action, candidate_type, candidate_key, item)
+        _maybe_complete_analysis(locked_analysis)
+        return result
     if candidate_type == "knowledge_point":
-        return _review_knowledge(question, locked_analysis, candidate_key, action, item)
-    if candidate_type == "tag":
-        return _review_tag(question, locked_analysis, candidate_key, action, item)
-    return _review_missing(locked_analysis, candidate_key, action, item)
+        result = _review_knowledge(question, locked_analysis, candidate_key, action, item)
+    elif candidate_type == "tag":
+        result = _review_tag(question, locked_analysis, candidate_key, action, item)
+    else:
+        result = _review_missing(locked_analysis, candidate_key, action, item)
+    _maybe_complete_analysis(locked_analysis)
+    return result
 
 
 __all__ = [

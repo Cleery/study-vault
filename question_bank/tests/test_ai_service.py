@@ -369,6 +369,134 @@ def test_worker_recovers_stale_analyzing_task(subject, monkeypatch):
 
 
 @pytest.mark.django_db
+def test_high_confidence_knowledge_candidate_is_auto_linked_with_ownership(subject):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question
+    from question_bank.models import AIReviewOwnership
+
+    question = Question.objects.create(subject=subject, title="高置信度自动关联")
+    card = KnowledgeCard.objects.create(subject=subject, name="罗尔定理", type="theorem")
+
+    class AutoProvider(SpyProvider):
+        def analyze(self, **kwargs):
+            return {
+                "status": "awaiting_review",
+                "recognized_statement": "题干",
+                "recognized_solution": "解答",
+                "knowledge_points": [{
+                    "name": card.name,
+                    "matched_card_id": str(card.pk),
+                    "confidence": 0.96,
+                    "reason": "直接使用",
+                }],
+                "suggested_tags": [{
+                    "name": "证明",
+                    "category": "method",
+                    "confidence": 0.99,
+                }],
+                "missing_cards": [{
+                    "name": "新卡片",
+                    "card_type": "other",
+                    "confidence": 0.99,
+                }],
+            }
+
+    analysis = analyze_question(
+        question,
+        provider=AutoProvider(),
+        config=AIConfig(enabled=True, auto_link_threshold=0.9),
+    )
+
+    assert question.knowledge_cards.filter(pk=card.pk).exists()
+    ownership = AIReviewOwnership.objects.get(
+        question=question, target_type="knowledge_point", target_id=card.pk
+    )
+    assert ownership.owning_analysis_id == analysis.pk
+    assert analysis.actions.filter(
+        action_type="confirm", candidate_type="knowledge_point", candidate_key=str(card.pk)
+    ).exists()
+    assert not analysis.actions.filter(candidate_type="tag").exists()
+    assert not analysis.actions.filter(candidate_type="missing_card").exists()
+    assert analysis.status == Question.AI_STATUS_AWAITING_REVIEW
+
+
+@pytest.mark.django_db
+def test_low_confidence_knowledge_candidate_is_not_auto_linked(subject):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question
+
+    question = Question.objects.create(subject=subject, title="低置信度不自动关联")
+    card = KnowledgeCard.objects.create(subject=subject, name="拉格朗日中值定理", type="theorem")
+
+    class LowProvider(SpyProvider):
+        def analyze(self, **kwargs):
+            return {
+                "status": "awaiting_review",
+                "recognized_statement": "题干",
+                "recognized_solution": "解答",
+                "knowledge_points": [{
+                    "name": card.name,
+                    "matched_card_id": str(card.pk),
+                    "confidence": 0.69,
+                }],
+                "suggested_tags": [],
+                "missing_cards": [],
+            }
+
+    analysis = analyze_question(
+        question,
+        provider=LowProvider(),
+        config=AIConfig(enabled=True, auto_link_threshold=0.9),
+    )
+
+    assert not question.knowledge_cards.filter(pk=card.pk).exists()
+    assert not analysis.actions.exists()
+    assert analysis.status == Question.AI_STATUS_AWAITING_REVIEW
+
+
+@pytest.mark.django_db
+def test_analysis_is_completed_after_all_candidates_are_reviewed(subject):
+    from question_bank.ai.actions import review_candidate
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question
+
+    question = Question.objects.create(subject=subject, title="全部候选已审核")
+    card = KnowledgeCard.objects.create(subject=subject, name="柯西定理", type="theorem")
+
+    class ReviewProvider(SpyProvider):
+        def analyze(self, **kwargs):
+            return {
+                "status": "awaiting_review",
+                "recognized_statement": "题干",
+                "recognized_solution": "解答",
+                "knowledge_points": [{
+                    "name": card.name,
+                    "matched_card_id": str(card.pk),
+                    "confidence": 0.8,
+                }],
+                "suggested_tags": [{
+                    "name": "极限",
+                    "category": "topic",
+                    "confidence": 0.8,
+                }],
+                "missing_cards": [],
+            }
+
+    analysis = analyze_question(
+        question,
+        provider=ReviewProvider(),
+        config=AIConfig(enabled=True),
+    )
+    review_candidate(analysis, "knowledge_point", str(card.pk), "ignore")
+    review_candidate(analysis, "tag", "topic:极限", "ignore")
+    analysis.refresh_from_db()
+    question.refresh_from_db()
+
+    assert analysis.status == Question.AI_STATUS_COMPLETED
+    assert question.ai_status == Question.AI_STATUS_COMPLETED
+
+
+@pytest.mark.django_db
 def test_worker_keeps_failure_after_retry_budget_is_exhausted(subject, monkeypatch):
     from question_bank.ai.config import AIConfig
     from question_bank.ai.service import analyze_question, process_next_ai_task
