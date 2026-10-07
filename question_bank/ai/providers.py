@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -32,6 +33,13 @@ ALLOWED_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 REDIRECT_HTTP_STATUS = frozenset({301, 302, 303, 307, 308})
 MAX_REDIRECTS = 3
 READ_CHUNK_BYTES = 64 * 1024
+
+
+@dataclass(frozen=True)
+class ResolvedAddress:
+    family: int
+    sockaddr: tuple[Any, ...]
+    ip_address: str
 
 
 class AnalysisProvider(Protocol):
@@ -113,13 +121,19 @@ def _resolve_target_addresses(
     resolver: Callable[..., Any],
     deadline: float,
     monotonic: Callable[[], float],
-) -> list[str]:
+) -> list[ResolvedAddress]:
     _validate_target_name(endpoint, allow_private=allow_private)
     parts = urlsplit(endpoint)
     hostname = parts.hostname or ""
     try:
-        ipaddress.ip_address(hostname.split("%", 1)[0])
-        return [hostname]
+        parsed_hostname = ipaddress.ip_address(hostname.split("%", 1)[0])
+        family = socket.AF_INET6 if parsed_hostname.version == 6 else socket.AF_INET
+        sockaddr = (
+            (str(parsed_hostname), parts.port or 443, 0, 0)
+            if family == socket.AF_INET6
+            else (str(parsed_hostname), parts.port or 443)
+        )
+        return [ResolvedAddress(family, sockaddr, str(parsed_hostname))]
     except ValueError:
         pass
 
@@ -144,13 +158,24 @@ def _resolve_target_addresses(
     addresses = value
     if not addresses:
         raise AIProviderError("relay hostname could not be resolved")
-    resolved: list[str] = []
+    resolved: list[ResolvedAddress] = []
+    seen: set[tuple[int, tuple[Any, ...]]] = set()
     for entry in addresses:
-        address = str(entry[4][0])
+        family, socktype, _, _, raw_sockaddr = entry
+        if family not in {socket.AF_INET, socket.AF_INET6}:
+            continue
+        if socktype not in {0, socket.SOCK_STREAM}:
+            continue
+        sockaddr = tuple(raw_sockaddr)
+        address = str(sockaddr[0])
         if not allow_private and _address_is_internal(address):
             raise AIProviderError("relay target resolved to a private network")
-        if address not in resolved:
-            resolved.append(address)
+        key = (family, sockaddr)
+        if key not in seen:
+            resolved.append(ResolvedAddress(family, sockaddr, address))
+            seen.add(key)
+    if not resolved:
+        raise AIProviderError("relay hostname could not be resolved")
     return resolved
 
 
@@ -170,22 +195,59 @@ def _normalize_endpoint(base_url: str) -> str:
 class PinnedHTTPSConnection(http.client.HTTPSConnection):
     """HTTPS connection pinned to a validated IP with hostname TLS verification."""
 
-    def __init__(self, *, hostname: str, port: int, ip_address: str, timeout: float):
+    def __init__(
+        self,
+        *,
+        hostname: str,
+        port: int,
+        family: int,
+        sockaddr: tuple[Any, ...],
+        timeout: float,
+    ):
         super().__init__(
             host=hostname,
             port=port,
             timeout=timeout,
             context=ssl.create_default_context(),
         )
-        self._ip_address = ip_address
+        self._family = family
+        self._sockaddr = sockaddr
+
+    def connect_tcp(self, *, timeout: float) -> None:
+        raw_socket = socket.socket(self._family, socket.SOCK_STREAM)
+        try:
+            raw_socket.settimeout(timeout)
+            if self.source_address:
+                raw_socket.bind(self.source_address)
+            raw_socket.connect(self._sockaddr)
+        except BaseException:
+            raw_socket.close()
+            raise
+        self.sock = raw_socket
+
+    def start_tls(self, *, timeout: float) -> None:
+        if self.sock is None:
+            raise http.client.NotConnected()
+        raw_socket = self.sock
+        raw_socket.settimeout(timeout)
+        try:
+            self.sock = self._context.wrap_socket(
+                raw_socket,
+                server_hostname=self.host,
+            )
+        except BaseException:
+            raw_socket.close()
+            self.sock = None
+            raise
+
+    def set_timeout(self, timeout: float) -> None:
+        self.timeout = timeout
+        if self.sock is not None:
+            self.sock.settimeout(timeout)
 
     def connect(self) -> None:
-        raw_socket = socket.create_connection(
-            (self._ip_address, self.port),
-            self.timeout,
-            self.source_address,
-        )
-        self.sock = self._context.wrap_socket(raw_socket, server_hostname=self.host)
+        self.connect_tcp(timeout=self.timeout)
+        self.start_tls(timeout=self.timeout)
 
 
 class _PinnedResponse:
@@ -345,7 +407,8 @@ class RelayProvider:
         request: Request,
         *,
         endpoint: str,
-        ip_address: str,
+        address: ResolvedAddress,
+        deadline: float,
         timeout: float,
     ):
         if self._transport is not None:
@@ -354,7 +417,8 @@ class RelayProvider:
         connection = self._connection_factory(
             hostname=parts.hostname or "",
             port=parts.port or 443,
-            ip_address=ip_address,
+            family=address.family,
+            sockaddr=address.sockaddr,
             timeout=timeout,
         )
         path = parts.path or "/"
@@ -362,8 +426,120 @@ class RelayProvider:
             path += "?" + parts.query
         headers = dict(request.header_items())
         headers["Host"] = parts.netloc
+        wrapped_response = None
+        try:
+            if hasattr(connection, "connect_tcp"):
+                self._run_connection_stage(
+                    lambda timeout: connection.connect_tcp(timeout=timeout),
+                    connection=connection,
+                    deadline=deadline,
+                    phase="TCP connect",
+                )
+                self._run_connection_stage(
+                    lambda timeout: connection.start_tls(timeout=timeout),
+                    connection=connection,
+                    deadline=deadline,
+                    phase="TLS handshake",
+                )
+            else:
+                self._run_connection_stage(
+                    lambda timeout: connection.connect(),
+                    connection=connection,
+                    deadline=deadline,
+                    phase="connection",
+                )
+            self._run_connection_stage(
+                lambda timeout: self._send_request(
+                    connection,
+                    request,
+                    path=path,
+                    headers=headers,
+                    timeout=timeout,
+                ),
+                connection=connection,
+                deadline=deadline,
+                phase="request send",
+            )
+            response = self._run_connection_stage(
+                lambda timeout: self._get_response(
+                    connection,
+                    timeout=timeout,
+                ),
+                connection=connection,
+                deadline=deadline,
+                phase="response headers",
+            )
+            wrapped_response = _PinnedResponse(response, connection)
+            return wrapped_response
+        finally:
+            if wrapped_response is None:
+                connection.close()
+
+    @staticmethod
+    def _set_connection_timeout(connection: Any, timeout: float) -> None:
+        if hasattr(connection, "set_timeout"):
+            connection.set_timeout(timeout)
+            return
+        connection.timeout = timeout
+        sock = getattr(connection, "sock", None)
+        if sock is not None:
+            sock.settimeout(timeout)
+
+    def _run_connection_stage(
+        self,
+        operation: Callable[[float], Any],
+        *,
+        connection: Any,
+        deadline: float,
+        phase: str,
+    ) -> Any:
+        remaining = deadline - self._monotonic()
+        if remaining <= 0:
+            connection.close()
+            raise AIProviderTimeoutError(
+                f"relay request deadline exceeded during {phase}"
+            )
+        timeout = min(self.timeout_seconds, remaining)
+        results: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+        def run() -> None:
+            try:
+                results.put((True, operation(timeout)))
+            except BaseException as exc:
+                results.put((False, exc))
+
+        threading.Thread(target=run, daemon=True).start()
+        try:
+            succeeded, value = results.get(timeout=remaining)
+        except queue.Empty:
+            connection.close()
+            raise AIProviderTimeoutError(
+                f"relay request deadline exceeded during {phase}"
+            ) from None
+        if self._monotonic() >= deadline:
+            connection.close()
+            raise AIProviderTimeoutError(
+                f"relay request deadline exceeded during {phase}"
+            )
+        if not succeeded:
+            raise value
+        return value
+
+    def _send_request(
+        self,
+        connection: Any,
+        request: Request,
+        *,
+        path: str,
+        headers: dict[str, str],
+        timeout: float,
+    ) -> None:
+        self._set_connection_timeout(connection, timeout)
         connection.request(request.method, path, body=request.data, headers=headers)
-        return _PinnedResponse(connection.getresponse(), connection)
+
+    def _get_response(self, connection: Any, *, timeout: float) -> Any:
+        self._set_connection_timeout(connection, timeout)
+        return connection.getresponse()
 
     def _read_response(self, response: Any, *, deadline: float) -> bytes:
         chunks: list[bytes] = []
@@ -483,12 +659,36 @@ class RelayProvider:
                         headers=request_headers,
                         method="POST",
                     )
-                    with self._open_response(
-                        request,
-                        endpoint=endpoint,
-                        ip_address=addresses[0],
-                        timeout=min(self.timeout_seconds, remaining),
-                    ) as response:
+                    response = None
+                    last_network_error: BaseException | None = None
+                    candidate_addresses = (
+                        addresses[:1] if self._transport is not None else addresses
+                    )
+                    for address in candidate_addresses:
+                        try:
+                            response = self._open_response(
+                                request,
+                                endpoint=endpoint,
+                                address=address,
+                                deadline=deadline,
+                                timeout=min(self.timeout_seconds, remaining),
+                            )
+                            break
+                        except (AIProviderError, http.client.HTTPException):
+                            raise
+                        except (TimeoutError, socket.timeout, OSError) as exc:
+                            last_network_error = exc
+                            if self._monotonic() >= deadline:
+                                raise AIProviderTimeoutError(
+                                    "relay request deadline exceeded"
+                                ) from None
+                    if response is None:
+                        if last_network_error is not None:
+                            raise last_network_error
+                        raise AIProviderError("relay network request failed")
+
+                    redirected_endpoint = None
+                    with response:
                         status = getattr(response, "status", 200)
                         if status in REDIRECT_HTTP_STATUS:
                             location = response.headers.get("Location")
@@ -500,29 +700,31 @@ class RelayProvider:
                             redirect_count += 1
                             if redirect_count > MAX_REDIRECTS:
                                 raise AIProviderError("relay redirect limit exceeded")
-                            endpoint = redirected
-                            continue
+                            redirected_endpoint = redirected
                         if not 200 <= status < 300:
-                            raise HTTPError(
-                                endpoint,
-                                status,
-                                "relay error",
-                                response.headers,
-                                response,
-                            )
-                        advertised = response.headers.get("Content-Length")
-                        if advertised is not None:
-                            try:
-                                advertised_size = int(advertised)
-                            except (TypeError, ValueError):
-                                advertised_size = 0
-                            if advertised_size > self.max_response_bytes:
-                                raise AIProviderError(
-                                    "relay response exceeded size limit"
+                            if redirected_endpoint is None:
+                                raise HTTPError(
+                                    endpoint,
+                                    status,
+                                    "relay error",
+                                    response.headers,
+                                    response,
                                 )
-                        return self._read_response(
-                            response, deadline=deadline
-                        ), request_id
+                        if redirected_endpoint is None:
+                            advertised = response.headers.get("Content-Length")
+                            if advertised is not None:
+                                try:
+                                    advertised_size = int(advertised)
+                                except (TypeError, ValueError):
+                                    advertised_size = 0
+                                if advertised_size > self.max_response_bytes:
+                                    raise AIProviderError(
+                                        "relay response exceeded size limit"
+                                    )
+                            return self._read_response(
+                                response, deadline=deadline
+                            ), request_id
+                    endpoint = redirected_endpoint
             except HTTPError as exc:
                 category = f"http_{exc.code}"
                 retryable = exc.code in RETRYABLE_HTTP_STATUS
@@ -560,6 +762,12 @@ class RelayProvider:
                     raise AIProviderError("relay network request failed") from None
             except AIProviderError:
                 raise
+            except http.client.HTTPException:
+                logger.warning(
+                    "AI relay request failed request_id=%s category=protocol",
+                    request_id,
+                )
+                raise AIProviderError("relay protocol failure") from None
             except (OSError, ValueError):
                 logger.warning(
                     "AI relay request failed request_id=%s category=network", request_id

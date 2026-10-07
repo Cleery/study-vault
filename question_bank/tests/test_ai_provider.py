@@ -1,5 +1,7 @@
+import http.client
 import io
 import json
+import socket
 import threading
 import time
 from types import SimpleNamespace
@@ -503,6 +505,16 @@ class FakePinnedConnection:
     def __init__(self, response):
         self.response = response
         self.requests = []
+        self.closed = False
+
+    def connect_tcp(self, *, timeout):
+        return None
+
+    def start_tls(self, *, timeout):
+        return None
+
+    def set_timeout(self, timeout):
+        return None
 
     def request(self, method, path, body=None, headers=None):
         self.requests.append((method, path, body, headers))
@@ -511,7 +523,7 @@ class FakePinnedConnection:
         return self.response
 
     def close(self):
-        pass
+        self.closed = True
 
 
 def test_default_transport_connects_to_validated_ip_without_system_reresolution(monkeypatch):
@@ -519,8 +531,8 @@ def test_default_transport_connects_to_validated_ip_without_system_reresolution(
     connection = FakePinnedConnection(response)
     factory_calls = []
 
-    def connection_factory(*, hostname, port, ip_address, timeout):
-        factory_calls.append((hostname, port, ip_address, timeout))
+    def connection_factory(*, hostname, port, family, sockaddr, timeout):
+        factory_calls.append((hostname, port, family, sockaddr, timeout))
         return connection
 
     monkeypatch.setattr(
@@ -534,7 +546,12 @@ def test_default_transport_connects_to_validated_ip_without_system_reresolution(
     )
 
     assert analyze(relay) == VALID_RESULT
-    assert factory_calls[0][0:3] == ("relay.example", 443, "8.8.8.8")
+    assert factory_calls[0][0:4] == (
+        "relay.example",
+        443,
+        socket.AF_INET,
+        ("8.8.8.8", 443),
+    )
     assert len(connection.requests) == 1
     assert connection.requests[0][3]["Authorization"] == "Bearer unit-test-key"
 
@@ -549,28 +566,205 @@ def test_pinned_connection_uses_validated_ip_and_original_hostname_for_tls(monke
             calls["server_hostname"] = server_hostname
             return sock
 
-    fake_socket = SimpleNamespace()
+    class FakeSocket:
+        def settimeout(self, timeout):
+            calls.setdefault("timeouts", []).append(timeout)
+
+        def connect(self, sockaddr):
+            calls["sockaddr"] = sockaddr
+
+        def close(self):
+            calls["closed"] = True
+
+    fake_socket = FakeSocket()
     monkeypatch.setattr(
         "question_bank.ai.providers.ssl.create_default_context", FakeContext
     )
     monkeypatch.setattr(
-        "question_bank.ai.providers.socket.create_connection",
-        lambda address, timeout, source_address: calls.update(
-            address=address, timeout=timeout
-        )
+        "question_bank.ai.providers.socket.socket",
+        lambda family, socktype: calls.update(family=family, socktype=socktype)
         or fake_socket,
+    )
+    monkeypatch.setattr(
+        "question_bank.ai.providers.socket.getaddrinfo",
+        lambda *args, **kwargs: pytest.fail("pinned connection resolved DNS again"),
     )
 
     connection = PinnedHTTPSConnection(
         hostname="relay.example",
         port=443,
-        ip_address="8.8.8.8",
+        family=socket.AF_INET6,
+        sockaddr=("2001:4860:4860::8888", 443, 0, 0),
         timeout=7,
     )
     connection.connect()
 
-    assert calls["address"] == ("8.8.8.8", 443)
+    assert calls["family"] == socket.AF_INET6
+    assert calls["socktype"] == socket.SOCK_STREAM
+    assert calls["sockaddr"] == ("2001:4860:4860::8888", 443, 0, 0)
     assert calls["server_hostname"] == "relay.example"
+
+
+def test_default_transport_tries_all_validated_addresses_in_order():
+    attempts = []
+
+    class AddressConnection(FakePinnedConnection):
+        def __init__(self, response, sockaddr):
+            super().__init__(response)
+            self.sockaddr = sockaddr
+
+        def connect_tcp(self, *, timeout):
+            attempts.append(self.sockaddr)
+            if len(attempts) == 1:
+                raise OSError("first address unavailable")
+
+    def connection_factory(*, hostname, port, family, sockaddr, timeout):
+        return AddressConnection(
+            openai_response(json.dumps(VALID_RESULT)),
+            sockaddr,
+        )
+
+    relay = provider(
+        None,
+        max_retries=0,
+        resolver=lambda host, port: [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:4860:4860::8888", port, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", port)),
+        ],
+        connection_factory=connection_factory,
+    )
+
+    assert analyze(relay) == VALID_RESULT
+    assert attempts == [
+        ("2001:4860:4860::8888", 443, 0, 0),
+        ("8.8.8.8", 443),
+    ]
+
+
+@pytest.mark.parametrize("blocked_phase", ["connect_tcp", "start_tls", "request", "getresponse"])
+def test_default_transport_enforces_total_deadline_for_each_connection_phase(blocked_phase):
+    from question_bank.ai.exceptions import AIProviderTimeoutError
+
+    release = threading.Event()
+    created = []
+
+    class BlockingConnection(FakePinnedConnection):
+        def _block(self, phase):
+            if blocked_phase == phase:
+                release.wait(1)
+
+        def connect_tcp(self, *, timeout):
+            self._block("connect_tcp")
+
+        def start_tls(self, *, timeout):
+            self._block("start_tls")
+
+        def request(self, method, path, body=None, headers=None):
+            self._block("request")
+            super().request(method, path, body=body, headers=headers)
+
+        def getresponse(self):
+            self._block("getresponse")
+            return super().getresponse()
+
+        def close(self):
+            super().close()
+            release.set()
+
+    def connection_factory(**kwargs):
+        connection = BlockingConnection(openai_response(json.dumps(VALID_RESULT)))
+        created.append(connection)
+        return connection
+
+    relay = provider(
+        None,
+        max_retries=0,
+        total_timeout_seconds=0.02,
+        connection_factory=connection_factory,
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(AIProviderTimeoutError, match="deadline"):
+            analyze(relay)
+    finally:
+        release.set()
+
+    assert time.monotonic() - started < 0.2
+    assert created[0].closed is True
+
+
+@pytest.mark.parametrize(
+    ("failure_phase", "protocol_error"),
+    [
+        ("request", lambda: http.client.CannotSendRequest("secret request detail")),
+        ("getresponse", lambda: http.client.LineTooLong("secret header detail")),
+    ],
+)
+def test_protocol_failure_during_request_or_headers_closes_connection(
+    failure_phase, protocol_error
+):
+    from question_bank.ai.exceptions import AIProviderError
+
+    created = []
+
+    class ProtocolFailureConnection(FakePinnedConnection):
+        def request(self, method, path, body=None, headers=None):
+            if failure_phase == "request":
+                raise protocol_error()
+            super().request(method, path, body=body, headers=headers)
+
+        def getresponse(self):
+            if failure_phase == "getresponse":
+                raise protocol_error()
+            return super().getresponse()
+
+    def connection_factory(**kwargs):
+        connection = ProtocolFailureConnection(
+            openai_response(json.dumps(VALID_RESULT))
+        )
+        created.append(connection)
+        return connection
+
+    relay = provider(
+        None,
+        max_retries=0,
+        connection_factory=connection_factory,
+    )
+
+    with pytest.raises(AIProviderError) as caught:
+        analyze(relay)
+
+    assert str(caught.value) == "relay protocol failure"
+    assert "secret" not in str(caught.value)
+    assert created[0].closed is True
+
+
+def test_incomplete_response_is_sanitized_and_closes_connection():
+    from question_bank.ai.exceptions import AIProviderError
+
+    created = []
+
+    class IncompleteResponse(FakeResponse):
+        def read(self, size=-1):
+            raise http.client.IncompleteRead(b"secret response fragment", 10)
+
+    def connection_factory(**kwargs):
+        connection = FakePinnedConnection(IncompleteResponse(b""))
+        created.append(connection)
+        return connection
+
+    relay = provider(
+        None,
+        max_retries=0,
+        connection_factory=connection_factory,
+    )
+
+    with pytest.raises(AIProviderError) as caught:
+        analyze(relay)
+
+    assert str(caught.value) == "relay protocol failure"
+    assert "secret" not in str(caught.value)
+    assert created[0].closed is True
 
 
 def test_dns_resolution_cannot_outlive_total_deadline():
