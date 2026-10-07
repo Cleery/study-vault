@@ -64,6 +64,8 @@ class AIConfig:
     total_timeout_seconds: int = 90
     max_retries: int = 2
     max_response_bytes: int = 2 * 1024 * 1024
+    max_request_bytes: int = 64 * 1024 * 1024
+    max_candidate_cards: int = 20
     max_image_count: int = 20
     max_image_bytes: int = 40 * 1024 * 1024
     allow_private_base_url: bool = False
@@ -89,6 +91,12 @@ class AIConfig:
             max_retries=_env_nonnegative_int("AI_MAX_RETRIES", cls.max_retries),
             max_response_bytes=_env_int(
                 "AI_MAX_RESPONSE_BYTES", cls.max_response_bytes
+            ),
+            max_request_bytes=_env_int(
+                "AI_MAX_REQUEST_BYTES", cls.max_request_bytes
+            ),
+            max_candidate_cards=_env_int(
+                "AI_MAX_CANDIDATE_CARDS", cls.max_candidate_cards
             ),
             max_image_count=_env_int("AI_MAX_IMAGE_COUNT", cls.max_image_count),
             max_image_bytes=_env_int("AI_MAX_IMAGE_BYTES", cls.max_image_bytes),
@@ -118,6 +126,10 @@ class AIConfig:
             raise ValueError("AI_MAX_RETRIES must be in 0..5")
         if self.max_response_bytes <= 0:
             raise ValueError("AI_MAX_RESPONSE_BYTES must be positive")
+        if self.max_request_bytes <= 0:
+            raise ValueError("AI_MAX_REQUEST_BYTES must be positive")
+        if self.max_candidate_cards <= 0:
+            raise ValueError("AI_MAX_CANDIDATE_CARDS must be positive")
         if self.max_image_count <= 0:
             raise ValueError("AI_MAX_IMAGE_COUNT must be positive")
         if self.max_image_bytes <= 0:
@@ -137,6 +149,8 @@ class AIConfig:
             f"total_timeout_seconds={self.total_timeout_seconds!r}, "
             f"max_retries={self.max_retries!r}, "
             f"max_response_bytes={self.max_response_bytes!r}, "
+            f"max_request_bytes={self.max_request_bytes!r}, "
+            f"max_candidate_cards={self.max_candidate_cards!r}, "
             f"max_image_count={self.max_image_count!r}, "
             f"max_image_bytes={self.max_image_bytes!r}, "
             f"allow_private_base_url={self.allow_private_base_url!r}, "

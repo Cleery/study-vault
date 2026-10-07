@@ -21,7 +21,12 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from urllib.request import Request
 
-from .exceptions import AIProviderError, AIProviderTimeoutError, AIResultValidationError
+from .exceptions import (
+    AIProviderError,
+    AIProviderResponseError,
+    AIProviderTimeoutError,
+    AIResultValidationError,
+)
 from .schemas import AnalysisResult
 
 
@@ -33,6 +38,12 @@ ALLOWED_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 REDIRECT_HTTP_STATUS = frozenset({301, 302, 303, 307, 308})
 MAX_REDIRECTS = 3
 READ_CHUNK_BYTES = 64 * 1024
+
+
+class ProviderResult(dict):
+    def __init__(self, payload: Mapping[str, Any], *, raw_response: Any):
+        super().__init__(payload)
+        self.raw_response = raw_response
 
 
 @dataclass(frozen=True)
@@ -362,6 +373,7 @@ class RelayProvider:
         total_timeout_seconds: int = 90,
         max_retries: int = 2,
         max_response_bytes: int = 2 * 1024 * 1024,
+        max_request_bytes: int = 64 * 1024 * 1024,
         max_image_count: int = 20,
         max_image_bytes: int = 40 * 1024 * 1024,
         allow_private_base_url: bool = False,
@@ -384,6 +396,8 @@ class RelayProvider:
             raise ValueError("AI_MAX_RETRIES must be in 0..5")
         if max_response_bytes <= 0:
             raise ValueError("AI_MAX_RESPONSE_BYTES must be positive")
+        if max_request_bytes <= 0:
+            raise ValueError("AI_MAX_REQUEST_BYTES must be positive")
         if max_image_count <= 0:
             raise ValueError("AI_MAX_IMAGE_COUNT must be positive")
         if max_image_bytes <= 0:
@@ -402,6 +416,7 @@ class RelayProvider:
         self.total_timeout_seconds = total_timeout_seconds
         self.max_retries = max_retries
         self.max_response_bytes = max_response_bytes
+        self.max_request_bytes = max_request_bytes
         self.max_image_count = max_image_count
         self.max_image_bytes = max_image_bytes
         self._allow_private_base_url = allow_private_base_url
@@ -682,6 +697,8 @@ class RelayProvider:
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")
+        if len(payload) > self.max_request_bytes:
+            raise AIProviderError("relay request exceeded size limit")
         request_headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -878,8 +895,11 @@ class RelayProvider:
                 "AI relay request failed request_id=%s category=invalid_response",
                 request_id,
             )
-            raise AIProviderError("relay returned an invalid response") from None
-        return result.to_dict()
+            raise AIProviderResponseError(
+                "relay returned an invalid response",
+                raw_response=envelope if "envelope" in locals() else None,
+            ) from None
+        return ProviderResult(result.to_dict(), raw_response=envelope)
 
 
 def provider_for_config(config: Any) -> AnalysisProvider:
@@ -892,6 +912,7 @@ def provider_for_config(config: Any) -> AnalysisProvider:
             total_timeout_seconds=getattr(config, "total_timeout_seconds", 90),
             max_retries=getattr(config, "max_retries", 2),
             max_response_bytes=getattr(config, "max_response_bytes", 2 * 1024 * 1024),
+            max_request_bytes=getattr(config, "max_request_bytes", 64 * 1024 * 1024),
             max_image_count=getattr(config, "max_image_count", 20),
             max_image_bytes=getattr(config, "max_image_bytes", 40 * 1024 * 1024),
             allow_private_base_url=getattr(config, "allow_private_base_url", False),

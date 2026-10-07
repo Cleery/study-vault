@@ -251,6 +251,40 @@ def test_relay_rejects_oversized_response_body(advertise_length):
         analyze(provider(transport, max_response_bytes=64, max_retries=0))
 
 
+def test_relay_rejects_oversized_request_before_transport_call():
+    from question_bank.ai.exceptions import AIProviderError
+
+    transport = SequenceTransport(openai_response(json.dumps(VALID_RESULT)))
+    relay = provider(transport, max_request_bytes=100)
+
+    with pytest.raises(AIProviderError, match="request exceeded size limit"):
+        analyze(relay)
+
+    assert transport.calls == []
+
+
+def test_relay_valid_result_carries_raw_provider_envelope_for_audit():
+    raw = openai_response(json.dumps(VALID_RESULT))
+    expected_body = json.loads(raw._stream.getvalue().decode("utf-8"))
+
+    result = analyze(provider(SequenceTransport(raw)))
+
+    assert result == VALID_RESULT
+    assert result.raw_response == expected_body
+
+
+def test_relay_invalid_schema_error_carries_raw_provider_envelope():
+    from question_bank.ai.exceptions import AIProviderResponseError
+
+    raw = openai_response(json.dumps({"status": "broken"}))
+    expected_body = json.loads(raw._stream.getvalue().decode("utf-8"))
+
+    with pytest.raises(AIProviderResponseError) as caught:
+        analyze(provider(SequenceTransport(raw)))
+
+    assert caught.value.raw_response == expected_body
+
+
 @pytest.mark.parametrize(
     "response",
     [

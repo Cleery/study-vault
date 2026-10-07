@@ -15,7 +15,7 @@ from django.utils import timezone
 from question_bank.models import KnowledgeCard, Question, QuestionAIAnalysis
 
 from .config import AIConfig
-from .exceptions import AIResultValidationError
+from .exceptions import AIProviderResponseError, AIResultValidationError
 from .providers import AnalysisProvider, PlaceholderProvider, provider_for_config
 from .schemas import AnalysisResult
 
@@ -119,6 +119,23 @@ def _safe_raw_response(payload: Any) -> dict[str, Any]:
     return payload
 
 
+def _bounded_raw_response(
+    payload: Any,
+    *,
+    secret: str,
+    byte_limit: int,
+) -> dict[str, Any]:
+    redacted = _safe_raw_response(_redact_secret(payload, secret))
+    encoded = json.dumps(
+        redacted,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) <= byte_limit:
+        return redacted
+    return {"truncated": True, "redacted_size_bytes": len(encoded)}
+
+
 def _mark_failed(
     analysis: QuestionAIAnalysis,
     *,
@@ -126,6 +143,7 @@ def _mark_failed(
     provider: AnalysisProvider,
     secret: str = "",
     raw_response: Any = None,
+    raw_response_byte_limit: int = 2 * 1024 * 1024,
 ) -> QuestionAIAnalysis:
     provider_name = _redact_secret(
         getattr(provider, "provider_name", provider.__class__.__name__), secret
@@ -141,7 +159,11 @@ def _mark_failed(
         "updated_at": completed_at,
     }
     if raw_response is not None:
-        values["raw_response"] = _safe_raw_response(raw_response)
+        values["raw_response"] = _bounded_raw_response(
+            raw_response,
+            secret=secret,
+            byte_limit=raw_response_byte_limit,
+        )
     QuestionAIAnalysis.objects.filter(
         pk=analysis.pk,
         version=analysis.version,
@@ -252,14 +274,40 @@ def analyze_question(
         )
 
     try:
+        keyword_items = _keyword_candidates(source_question, cards)
+        card_by_id = {str(card.pk): card for card in cards}
+        candidate_cards = [
+            card_by_id[item["matched_card_id"]]
+            for item in keyword_items[: config.max_candidate_cards]
+            if item["matched_card_id"] in card_by_id
+        ]
+    except Exception:
+        return _mark_failed(
+            analysis,
+            message="候选知识卡片检索失败，请稍后重试。",
+            provider=provider,
+            secret=config.api_key,
+        )
+
+    try:
         payload = provider.analyze(
             question_images=list(source_question.attachments.filter(attachment_role="question")),
             solution_images=list(source_question.attachments.filter(attachment_role="solution")),
             corrected_text=corrected_text,
-            knowledge_cards=cards,
+            knowledge_cards=candidate_cards,
             personal_notes=source_question.personal_signals or "",
         )
+        raw_response = getattr(payload, "raw_response", payload)
         payload = _redact_secret(payload, config.api_key)
+    except AIProviderResponseError as exc:
+        return _mark_failed(
+            analysis,
+            message="AI 返回格式无效，请重新分析。",
+            provider=provider,
+            secret=config.api_key,
+            raw_response=exc.raw_response,
+            raw_response_byte_limit=config.max_response_bytes,
+        )
     except TimeoutError:
         return _mark_failed(
             analysis,
@@ -283,18 +331,8 @@ def analyze_question(
             message="AI 返回格式无效，请重新分析。",
             provider=provider,
             secret=config.api_key,
-            raw_response=payload,
-        )
-
-    try:
-        keyword_items = _keyword_candidates(source_question, cards)
-    except Exception:
-        return _mark_failed(
-            analysis,
-            message="候选知识卡片检索失败，请稍后重试。",
-            provider=provider,
-            secret=config.api_key,
-            raw_response=payload,
+            raw_response=raw_response,
+            raw_response_byte_limit=config.max_response_bytes,
         )
 
     try:
@@ -342,7 +380,11 @@ def analyze_question(
                 knowledge_points={"items": list(merged.values())},
                 suggested_tags={"items": [item.to_dict() for item in result.suggested_tags]},
                 missing_cards={"items": [item.to_dict() for item in result.missing_cards]},
-                raw_response=result.to_dict(),
+                raw_response=_bounded_raw_response(
+                    raw_response,
+                    secret=config.api_key,
+                    byte_limit=config.max_response_bytes,
+                ),
                 error_message="",
                 completed_at=completed_at,
                 updated_at=completed_at,
@@ -364,7 +406,8 @@ def analyze_question(
             message="AI 分析结果保存失败，请稍后重试。",
             provider=provider,
             secret=config.api_key,
-            raw_response=payload,
+            raw_response=raw_response,
+            raw_response_byte_limit=config.max_response_bytes,
         )
 
 

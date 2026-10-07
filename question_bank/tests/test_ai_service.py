@@ -1,5 +1,6 @@
 import importlib
 from datetime import timedelta
+import json
 
 import pytest
 from django.apps import apps
@@ -330,6 +331,90 @@ def test_keyword_matching_uses_all_knowledge_card_fields(subject, field_name, fi
     )
     items = analysis.knowledge_points["items"]
     assert any(item["matched_card_id"] == str(card.pk) for item in items)
+
+
+@pytest.mark.django_db
+def test_provider_receives_only_limited_local_keyword_candidates(subject):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question
+
+    matched = [
+        KnowledgeCard.objects.create(
+            subject=subject,
+            name=f"候选定理{i}",
+            type="theorem",
+        )
+        for i in range(4)
+    ]
+    unrelated = KnowledgeCard.objects.create(
+        subject=subject,
+        name="不得外发的整科卡片",
+        type="theorem",
+        proof="私密证明全文",
+    )
+    question = Question.objects.create(
+        subject=subject,
+        title="本地候选",
+        recognized_statement="候选定理0 候选定理1 候选定理2 候选定理3",
+    )
+    captured = {}
+
+    class CandidateCapturingProvider(SpyProvider):
+        def analyze(self, **kwargs):
+            captured["cards"] = list(kwargs["knowledge_cards"])
+            return super().analyze(**kwargs)
+
+    analyze_question(
+        question,
+        provider=CandidateCapturingProvider(),
+        config=AIConfig(enabled=True, max_candidate_cards=2),
+    )
+
+    assert len(captured["cards"]) == 2
+    assert set(captured["cards"]).issubset(set(matched))
+    assert unrelated not in captured["cards"]
+
+
+def test_candidate_and_request_limits_load_from_environment(monkeypatch):
+    from question_bank.ai.config import AIConfig
+
+    monkeypatch.setenv("AI_MAX_CANDIDATE_CARDS", "7")
+    monkeypatch.setenv("AI_MAX_REQUEST_BYTES", "12345")
+
+    config = AIConfig.from_env()
+
+    assert config.max_candidate_cards == 7
+    assert config.max_request_bytes == 12345
+
+
+@pytest.mark.django_db
+def test_invalid_provider_response_raw_envelope_is_redacted_and_retained(subject):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.exceptions import AIProviderResponseError
+    from question_bank.ai.service import analyze_question
+
+    secret = "raw-envelope-secret"
+    question = Question.objects.create(subject=subject, title="无效响应审计")
+
+    class InvalidEnvelopeProvider:
+        provider_name = "invalid-envelope"
+        model_name = "invalid-model"
+
+        def analyze(self, **kwargs):
+            raise AIProviderResponseError(
+                "invalid schema",
+                raw_response={"id": "raw-1", "content": f"Bearer {secret}"},
+            )
+
+    analysis = analyze_question(
+        question,
+        provider=InvalidEnvelopeProvider(),
+        config=AIConfig(enabled=True, api_key=secret, max_response_bytes=4096),
+    )
+
+    assert analysis.status == Question.AI_STATUS_FAILED
+    assert analysis.raw_response["id"] == "raw-1"
+    assert secret not in json.dumps(analysis.raw_response, ensure_ascii=False)
 
 
 @pytest.mark.django_db
