@@ -767,6 +767,88 @@ def test_incomplete_response_is_sanitized_and_closes_connection():
     assert created[0].closed is True
 
 
+class BlockingBodyResponse(FakeResponse):
+    def __init__(self):
+        super().__init__(b"")
+        self.closed = False
+        self.read_started = threading.Event()
+        self.release = threading.Event()
+
+    def read(self, size=-1):
+        self.read_started.set()
+        self.release.wait(1)
+        return b""
+
+    def close(self):
+        self.closed = True
+        self.release.set()
+
+    def __exit__(self, *args):
+        self.close()
+        return False
+
+
+class ShortReceiveLoopResponse(BlockingBodyResponse):
+    def __init__(self):
+        super().__init__()
+        self.receive_count = 0
+
+    def read(self, size=-1):
+        self.read_started.set()
+        received = bytearray()
+        while len(received) < size and not self.release.wait(0.005):
+            received.extend(b"x")
+            self.receive_count += 1
+        return bytes(received)
+
+
+@pytest.mark.parametrize("response_type", [BlockingBodyResponse, ShortReceiveLoopResponse])
+def test_body_read_is_interrupted_when_total_deadline_expires(response_type):
+    from question_bank.ai.exceptions import AIProviderTimeoutError
+
+    response = response_type()
+    relay = provider(SequenceTransport(), timeout_seconds=1)
+    started = time.monotonic()
+
+    with pytest.raises(AIProviderTimeoutError, match="deadline"):
+        relay._read_response(response, deadline=started + 0.04)
+
+    assert time.monotonic() - started < 0.2
+    assert response.read_started.is_set()
+    assert response.closed is True
+    if isinstance(response, ShortReceiveLoopResponse):
+        assert response.receive_count >= 2
+
+
+@pytest.mark.django_db
+def test_blocked_body_read_timeout_marks_analysis_failed():
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question
+    from question_bank.models import Question, Subject
+
+    response = BlockingBodyResponse()
+    relay = provider(
+        SequenceTransport(response),
+        max_retries=0,
+        timeout_seconds=1,
+        total_timeout_seconds=0.04,
+    )
+    subject = Subject.objects.create(name="数学分析")
+    question = Question.objects.create(subject=subject, title="阻塞响应体")
+
+    analysis = analyze_question(
+        question,
+        provider=relay,
+        config=AIConfig(enabled=True),
+    )
+
+    question.refresh_from_db()
+    assert response.closed is True
+    assert analysis.status == Question.AI_STATUS_FAILED
+    assert question.ai_status == Question.AI_STATUS_FAILED
+    assert analysis.error_message == "AI Provider 请求超时，请稍后重试。"
+
+
 def test_dns_resolution_cannot_outlive_total_deadline():
     from question_bank.ai.exceptions import AIProviderTimeoutError
 

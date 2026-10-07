@@ -269,11 +269,14 @@ class _PinnedResponse:
         if sock is not None:
             sock.settimeout(timeout)
 
+    def close(self) -> None:
+        self._connection.close()
+
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
-        self._connection.close()
+        self.close()
         return False
 
 
@@ -493,9 +496,24 @@ class RelayProvider:
         deadline: float,
         phase: str,
     ) -> Any:
+        return self._run_deadline_operation(
+            operation,
+            deadline=deadline,
+            on_timeout=connection.close,
+            phase=phase,
+        )
+
+    def _run_deadline_operation(
+        self,
+        operation: Callable[[float], Any],
+        *,
+        deadline: float,
+        on_timeout: Callable[[], None],
+        phase: str,
+    ) -> Any:
         remaining = deadline - self._monotonic()
         if remaining <= 0:
-            connection.close()
+            on_timeout()
             raise AIProviderTimeoutError(
                 f"relay request deadline exceeded during {phase}"
             )
@@ -512,12 +530,12 @@ class RelayProvider:
         try:
             succeeded, value = results.get(timeout=remaining)
         except queue.Empty:
-            connection.close()
+            on_timeout()
             raise AIProviderTimeoutError(
                 f"relay request deadline exceeded during {phase}"
             ) from None
         if self._monotonic() >= deadline:
-            connection.close()
+            on_timeout()
             raise AIProviderTimeoutError(
                 f"relay request deadline exceeded during {phase}"
             )
@@ -545,14 +563,20 @@ class RelayProvider:
         chunks: list[bytes] = []
         size = 0
         while True:
-            remaining = deadline - self._monotonic()
-            if remaining <= 0:
-                raise AIProviderTimeoutError("relay request deadline exceeded")
-            if hasattr(response, "set_timeout"):
-                response.set_timeout(min(self.timeout_seconds, remaining))
-            chunk = response.read(min(READ_CHUNK_BYTES, self.max_response_bytes + 1 - size))
-            if self._monotonic() >= deadline:
-                raise AIProviderTimeoutError("relay request deadline exceeded")
+            read_size = min(
+                READ_CHUNK_BYTES,
+                self.max_response_bytes + 1 - size,
+            )
+            chunk = self._run_deadline_operation(
+                lambda timeout: self._read_response_chunk(
+                    response,
+                    size=read_size,
+                    timeout=timeout,
+                ),
+                deadline=deadline,
+                on_timeout=lambda: self._close_response(response),
+                phase="response body",
+            )
             if not chunk:
                 break
             chunks.append(chunk)
@@ -560,6 +584,23 @@ class RelayProvider:
             if size > self.max_response_bytes:
                 raise AIProviderError("relay response exceeded size limit")
         return b"".join(chunks)
+
+    @staticmethod
+    def _read_response_chunk(
+        response: Any,
+        *,
+        size: int,
+        timeout: float,
+    ) -> bytes:
+        if hasattr(response, "set_timeout"):
+            response.set_timeout(timeout)
+        return response.read(size)
+
+    @staticmethod
+    def _close_response(response: Any) -> None:
+        close = getattr(response, "close", None)
+        if close is not None:
+            close()
 
     def _messages(
         self,
