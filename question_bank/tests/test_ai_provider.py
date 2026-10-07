@@ -1,5 +1,7 @@
 import io
 import json
+import threading
+import time
 from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request
@@ -18,8 +20,8 @@ VALID_RESULT = {
 
 
 class FakeResponse:
-    def __init__(self, payload, *, headers=None):
-        self.status = 200
+    def __init__(self, payload, *, status=200, headers=None):
+        self.status = status
         self.headers = headers or {}
         self._stream = io.BytesIO(payload)
 
@@ -337,23 +339,20 @@ def test_provider_retries_can_be_disabled_from_environment(monkeypatch):
 
 
 def test_relay_rejects_cross_origin_redirect_without_forwarding_authorization():
-    from question_bank.ai.providers import SameOriginRedirectHandler
+    from question_bank.ai.exceptions import AIProviderError
 
-    handler = SameOriginRedirectHandler()
-    original = Request(
-        "https://relay.example/v1/chat/completions",
-        headers={"Authorization": "Bearer unit-test-key"},
+    transport = SequenceTransport(
+        FakeResponse(
+            b"",
+            status=302,
+            headers={"Location": "https://attacker.example/collect"},
+        )
     )
 
-    with pytest.raises(HTTPError, match="cross-origin redirect blocked"):
-        handler.redirect_request(
-            original,
-            None,
-            302,
-            "found",
-            {},
-            "https://attacker.example/collect",
-        )
+    with pytest.raises(AIProviderError, match="cross-origin redirect blocked"):
+        analyze(provider(transport))
+
+    assert len(transport.calls) == 1
 
 
 @pytest.mark.parametrize("name", ["image.gif", "image.svg", "image.bmp"])
@@ -441,14 +440,17 @@ def test_relay_rejects_insecure_or_private_targets_by_default(base_url):
 
 
 def test_relay_rejects_hostname_resolving_to_private_address():
-    resolver = lambda host, port: [(2, 1, 6, "", ("192.168.1.20", port))]
+    from question_bank.ai.exceptions import AIProviderError
 
-    with pytest.raises(ValueError, match="private network"):
-        provider(
-            SequenceTransport(),
-            base_url="https://relay.example/v1",
-            resolver=resolver,
-        )
+    resolver = lambda host, port: [(2, 1, 6, "", ("192.168.1.20", port))]
+    relay = provider(
+        SequenceTransport(openai_response(json.dumps(VALID_RESULT))),
+        base_url="https://relay.example/v1",
+        resolver=resolver,
+    )
+
+    with pytest.raises(AIProviderError, match="private network"):
+        analyze(relay)
 
 
 def test_relay_allows_private_target_only_with_explicit_override():
@@ -470,13 +472,16 @@ def test_relay_revalidates_dns_before_request_to_block_rebinding():
             [(2, 1, 6, "", ("127.0.0.1", 443))],
         ]
     )
-    transport = SequenceTransport(openai_response(json.dumps(VALID_RESULT)))
+    transport = SequenceTransport(
+        TimeoutError("first attempt"),
+        openai_response(json.dumps(VALID_RESULT)),
+    )
     relay = provider(transport, resolver=lambda host, port: next(resolutions))
 
-    with pytest.raises(ValueError, match="private network"):
+    with pytest.raises(AIProviderError, match="private network"):
         analyze(relay)
 
-    assert transport.calls == []
+    assert len(transport.calls) == 1
 
 
 def test_relay_rejects_response_when_read_finishes_after_total_deadline():
@@ -492,3 +497,198 @@ def test_relay_rejects_response_when_read_finishes_after_total_deadline():
 
     with pytest.raises(AIProviderTimeoutError, match="deadline"):
         analyze(relay)
+
+
+class FakePinnedConnection:
+    def __init__(self, response):
+        self.response = response
+        self.requests = []
+
+    def request(self, method, path, body=None, headers=None):
+        self.requests.append((method, path, body, headers))
+
+    def getresponse(self):
+        return self.response
+
+    def close(self):
+        pass
+
+
+def test_default_transport_connects_to_validated_ip_without_system_reresolution(monkeypatch):
+    response = openai_response(json.dumps(VALID_RESULT))
+    connection = FakePinnedConnection(response)
+    factory_calls = []
+
+    def connection_factory(*, hostname, port, ip_address, timeout):
+        factory_calls.append((hostname, port, ip_address, timeout))
+        return connection
+
+    monkeypatch.setattr(
+        "socket.getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("127.0.0.1", 443))],
+    )
+    relay = provider(
+        None,
+        resolver=lambda host, port: [(2, 1, 6, "", ("8.8.8.8", port))],
+        connection_factory=connection_factory,
+    )
+
+    assert analyze(relay) == VALID_RESULT
+    assert factory_calls[0][0:3] == ("relay.example", 443, "8.8.8.8")
+    assert len(connection.requests) == 1
+    assert connection.requests[0][3]["Authorization"] == "Bearer unit-test-key"
+
+
+def test_pinned_connection_uses_validated_ip_and_original_hostname_for_tls(monkeypatch):
+    from question_bank.ai.providers import PinnedHTTPSConnection
+
+    calls = {}
+
+    class FakeContext:
+        def wrap_socket(self, sock, *, server_hostname):
+            calls["server_hostname"] = server_hostname
+            return sock
+
+    fake_socket = SimpleNamespace()
+    monkeypatch.setattr(
+        "question_bank.ai.providers.ssl.create_default_context", FakeContext
+    )
+    monkeypatch.setattr(
+        "question_bank.ai.providers.socket.create_connection",
+        lambda address, timeout, source_address: calls.update(
+            address=address, timeout=timeout
+        )
+        or fake_socket,
+    )
+
+    connection = PinnedHTTPSConnection(
+        hostname="relay.example",
+        port=443,
+        ip_address="8.8.8.8",
+        timeout=7,
+    )
+    connection.connect()
+
+    assert calls["address"] == ("8.8.8.8", 443)
+    assert calls["server_hostname"] == "relay.example"
+
+
+def test_dns_resolution_cannot_outlive_total_deadline():
+    from question_bank.ai.exceptions import AIProviderTimeoutError
+
+    release = threading.Event()
+
+    def blocked_resolver(host, port):
+        release.wait(1)
+        return [(2, 1, 6, "", ("8.8.8.8", port))]
+
+    relay = provider(
+        SequenceTransport(openai_response(json.dumps(VALID_RESULT))),
+        resolver=blocked_resolver,
+        total_timeout_seconds=0.02,
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(AIProviderTimeoutError, match="DNS"):
+            analyze(relay)
+    finally:
+        release.set()
+
+    assert time.monotonic() - started < 0.2
+
+
+def test_same_origin_redirect_is_reresolved_and_keeps_authorization():
+    redirect = FakeResponse(
+        b"",
+        status=307,
+        headers={"Location": "/v1/alternate"},
+    )
+    transport = SequenceTransport(
+        redirect,
+        openai_response(json.dumps(VALID_RESULT)),
+    )
+    resolved = []
+
+    def resolver(host, port):
+        resolved.append((host, port))
+        return [(2, 1, 6, "", ("8.8.8.8", port))]
+
+    result = analyze(provider(transport, resolver=resolver))
+
+    assert result == VALID_RESULT
+    assert resolved == [("relay.example", 443), ("relay.example", 443)]
+    assert transport.calls[1][0].full_url == "https://relay.example/v1/alternate"
+    assert dict(transport.calls[1][0].header_items())["Authorization"] == "Bearer unit-test-key"
+
+
+class SlowDripResponse(FakeResponse):
+    def __init__(self, payload, clock, step):
+        super().__init__(payload)
+        self.clock = clock
+        self.step = step
+        self.read_calls = 0
+        self.timeouts = []
+
+    def set_timeout(self, timeout):
+        self.timeouts.append(timeout)
+
+    def read(self, size=-1):
+        self.clock[0] += self.step
+        self.read_calls += 1
+        return self._stream.read(min(size, 8))
+
+
+def test_slow_drip_response_cannot_extend_total_deadline():
+    from question_bank.ai.exceptions import AIProviderTimeoutError
+
+    clock = [0.0]
+    response = SlowDripResponse(
+        openai_response(json.dumps(VALID_RESULT))._stream.getvalue(),
+        clock,
+        step=2.0,
+    )
+    relay = provider(
+        SequenceTransport(response),
+        timeout_seconds=4,
+        total_timeout_seconds=5,
+        monotonic=lambda: clock[0],
+    )
+
+    with pytest.raises(AIProviderTimeoutError, match="deadline"):
+        analyze(relay)
+
+    assert response.read_calls == 3
+    assert response.timeouts == [4, 3, 1]
+
+
+@pytest.mark.django_db
+def test_slow_drip_timeout_marks_analysis_failed():
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question
+    from question_bank.models import Question, Subject
+
+    clock = [0.0]
+    response = SlowDripResponse(
+        openai_response(json.dumps(VALID_RESULT))._stream.getvalue(),
+        clock,
+        step=2.0,
+    )
+    relay = provider(
+        SequenceTransport(response),
+        timeout_seconds=4,
+        total_timeout_seconds=5,
+        monotonic=lambda: clock[0],
+    )
+    subject = Subject.objects.create(name="数学分析")
+    question = Question.objects.create(subject=subject, title="慢速响应")
+
+    analysis = analyze_question(
+        question,
+        provider=relay,
+        config=AIConfig(enabled=True),
+    )
+
+    question.refresh_from_db()
+    assert analysis.status == Question.AI_STATUS_FAILED
+    assert question.ai_status == Question.AI_STATUS_FAILED
+    assert analysis.error_message == "AI Provider 请求超时，请稍后重试。"

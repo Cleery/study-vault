@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import ipaddress
 import json
 import logging
 import mimetypes
+import queue
 import socket
+import ssl
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit, urlunsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.request import Request
 
 from .exceptions import AIProviderError, AIProviderTimeoutError, AIResultValidationError
 from .schemas import AnalysisResult
@@ -25,6 +29,9 @@ logger = logging.getLogger(__name__)
 RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 CHAT_COMPLETIONS_PATH = ("chat", "completions")
 ALLOWED_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
+REDIRECT_HTTP_STATUS = frozenset({301, 302, 303, 307, 308})
+MAX_REDIRECTS = 3
+READ_CHUNK_BYTES = 64 * 1024
 
 
 class AnalysisProvider(Protocol):
@@ -73,40 +80,15 @@ def _origin(url: str) -> tuple[str, str, int]:
     return parts.scheme.lower(), (parts.hostname or "").lower(), parts.port or default_port
 
 
-class SameOriginRedirectHandler(HTTPRedirectHandler):
-    """Permit redirects only when credentials remain on the same origin."""
-
-    def __init__(
-        self,
-        *,
-        allow_private: bool = False,
-        resolver: Callable[..., Any] = socket.getaddrinfo,
-    ):
-        super().__init__()
-        self._allow_private = allow_private
-        self._resolver = resolver
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if _origin(req.full_url) != _origin(newurl):
-            raise HTTPError(newurl, code, "cross-origin redirect blocked", headers, fp)
-        _validate_public_target(
-            newurl,
-            allow_private=self._allow_private,
-            resolver=self._resolver,
-        )
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
 def _address_is_internal(address: str) -> bool:
     parsed = ipaddress.ip_address(address.split("%", 1)[0])
     return not parsed.is_global
 
 
-def _validate_public_target(
+def _validate_target_name(
     endpoint: str,
     *,
     allow_private: bool,
-    resolver: Callable[..., Any],
 ) -> None:
     if allow_private:
         return
@@ -122,16 +104,54 @@ def _validate_public_target(
         if is_internal_literal:
             raise ValueError("AI_BASE_URL must not target a private network")
         return
+
+
+def _resolve_target_addresses(
+    endpoint: str,
+    *,
+    allow_private: bool,
+    resolver: Callable[..., Any],
+    deadline: float,
+    monotonic: Callable[[], float],
+) -> list[str]:
+    _validate_target_name(endpoint, allow_private=allow_private)
+    parts = urlsplit(endpoint)
+    hostname = parts.hostname or ""
     try:
-        addresses = resolver(hostname, parts.port or 443)
-    except OSError as exc:
-        raise ValueError("AI_BASE_URL hostname could not be resolved") from exc
+        ipaddress.ip_address(hostname.split("%", 1)[0])
+        return [hostname]
+    except ValueError:
+        pass
+
+    results: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+    def resolve() -> None:
+        try:
+            results.put((True, resolver(hostname, parts.port or 443)))
+        except BaseException as exc:
+            results.put((False, exc))
+
+    threading.Thread(target=resolve, daemon=True).start()
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise AIProviderTimeoutError("relay request deadline exceeded during DNS")
+    try:
+        succeeded, value = results.get(timeout=remaining)
+    except queue.Empty:
+        raise AIProviderTimeoutError("relay request deadline exceeded during DNS") from None
+    if not succeeded:
+        raise AIProviderError("relay hostname could not be resolved") from None
+    addresses = value
     if not addresses:
-        raise ValueError("AI_BASE_URL hostname could not be resolved")
+        raise AIProviderError("relay hostname could not be resolved")
+    resolved: list[str] = []
     for entry in addresses:
-        sockaddr = entry[4]
-        if _address_is_internal(str(sockaddr[0])):
-            raise ValueError("AI_BASE_URL must not target a private network")
+        address = str(entry[4][0])
+        if not allow_private and _address_is_internal(address):
+            raise AIProviderError("relay target resolved to a private network")
+        if address not in resolved:
+            resolved.append(address)
+    return resolved
 
 
 def _normalize_endpoint(base_url: str) -> str:
@@ -147,14 +167,52 @@ def _normalize_endpoint(base_url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
-def _default_transport(*, allow_private: bool, resolver: Callable[..., Any]):
-    opener = build_opener(
-        SameOriginRedirectHandler(
-            allow_private=allow_private,
-            resolver=resolver,
+class PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection pinned to a validated IP with hostname TLS verification."""
+
+    def __init__(self, *, hostname: str, port: int, ip_address: str, timeout: float):
+        super().__init__(
+            host=hostname,
+            port=port,
+            timeout=timeout,
+            context=ssl.create_default_context(),
         )
-    )
-    return opener.open
+        self._ip_address = ip_address
+
+    def connect(self) -> None:
+        raw_socket = socket.create_connection(
+            (self._ip_address, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        self.sock = self._context.wrap_socket(raw_socket, server_hostname=self.host)
+
+
+class _PinnedResponse:
+    def __init__(self, response: Any, connection: Any):
+        self._response = response
+        self._connection = connection
+        self.status = response.status
+        self.headers = response.headers
+
+    def read(self, size: int = -1) -> bytes:
+        return self._response.read(size)
+
+    def set_timeout(self, timeout: float) -> None:
+        sock = getattr(self._connection, "sock", None)
+        if sock is None:
+            fp = getattr(self._response, "fp", None)
+            raw = getattr(fp, "raw", None)
+            sock = getattr(raw, "_sock", None)
+        if sock is not None:
+            sock.settimeout(timeout)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self._connection.close()
+        return False
 
 
 def _image_data_url(attachment: Any, *, byte_limit: int) -> tuple[str, int]:
@@ -240,6 +298,7 @@ class RelayProvider:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         resolver: Callable[..., Any] = socket.getaddrinfo,
+        connection_factory: Callable[..., Any] = PinnedHTTPSConnection,
     ):
         if not api_key:
             raise ValueError("AI_API_KEY is required for relay provider")
@@ -261,10 +320,9 @@ class RelayProvider:
             raise ValueError("retry_backoff_seconds must not be negative")
 
         self.endpoint = _normalize_endpoint(base_url)
-        _validate_public_target(
+        _validate_target_name(
             self.endpoint,
             allow_private=allow_private_base_url,
-            resolver=resolver,
         )
         self._api_key = api_key
         self.model_name = model_name.strip()
@@ -276,13 +334,56 @@ class RelayProvider:
         self.max_image_bytes = max_image_bytes
         self._allow_private_base_url = allow_private_base_url
         self._resolver = resolver
-        self._transport = transport or _default_transport(
-            allow_private=allow_private_base_url,
-            resolver=resolver,
-        )
+        self._transport = transport
+        self._connection_factory = connection_factory
         self._retry_backoff_seconds = retry_backoff_seconds
         self._monotonic = monotonic
         self._sleep = sleep
+
+    def _open_response(
+        self,
+        request: Request,
+        *,
+        endpoint: str,
+        ip_address: str,
+        timeout: float,
+    ):
+        if self._transport is not None:
+            return self._transport(request, timeout=timeout)
+        parts = urlsplit(endpoint)
+        connection = self._connection_factory(
+            hostname=parts.hostname or "",
+            port=parts.port or 443,
+            ip_address=ip_address,
+            timeout=timeout,
+        )
+        path = parts.path or "/"
+        if parts.query:
+            path += "?" + parts.query
+        headers = dict(request.header_items())
+        headers["Host"] = parts.netloc
+        connection.request(request.method, path, body=request.data, headers=headers)
+        return _PinnedResponse(connection.getresponse(), connection)
+
+    def _read_response(self, response: Any, *, deadline: float) -> bytes:
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise AIProviderTimeoutError("relay request deadline exceeded")
+            if hasattr(response, "set_timeout"):
+                response.set_timeout(min(self.timeout_seconds, remaining))
+            chunk = response.read(min(READ_CHUNK_BYTES, self.max_response_bytes + 1 - size))
+            if self._monotonic() >= deadline:
+                raise AIProviderTimeoutError("relay request deadline exceeded")
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > self.max_response_bytes:
+                raise AIProviderError("relay response exceeded size limit")
+        return b"".join(chunks)
 
     def _messages(
         self,
@@ -354,53 +455,74 @@ class RelayProvider:
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")
-        request = Request(
-            self.endpoint,
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "X-Request-ID": request_id,
-            },
-            method="POST",
-        )
+        request_headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-Request-ID": request_id,
+        }
 
         for attempt in range(self.max_retries + 1):
-            remaining = deadline - self._monotonic()
-            if remaining <= 0:
-                raise AIProviderTimeoutError("relay request deadline exceeded")
-            _validate_public_target(
-                self.endpoint,
-                allow_private=self._allow_private_base_url,
-                resolver=self._resolver,
-            )
-            remaining = deadline - self._monotonic()
-            if remaining <= 0:
-                raise AIProviderTimeoutError("relay request deadline exceeded")
+            endpoint = self.endpoint
+            redirect_count = 0
             try:
-                with self._transport(
-                    request, timeout=min(self.timeout_seconds, remaining)
-                ) as response:
-                    status = getattr(response, "status", 200)
-                    if not 200 <= status < 300:
-                        raise HTTPError(
-                            self.endpoint, status, "relay error", response.headers, response
-                        )
-                    advertised = response.headers.get("Content-Length")
-                    if advertised is not None:
-                        try:
-                            advertised_size = int(advertised)
-                        except (TypeError, ValueError):
-                            advertised_size = 0
-                        if advertised_size > self.max_response_bytes:
-                            raise AIProviderError("relay response exceeded size limit")
-                    body = response.read(self.max_response_bytes + 1)
-                    if len(body) > self.max_response_bytes:
-                        raise AIProviderError("relay response exceeded size limit")
-                    if self._monotonic() >= deadline:
+                while True:
+                    addresses = _resolve_target_addresses(
+                        endpoint,
+                        allow_private=self._allow_private_base_url,
+                        resolver=self._resolver,
+                        deadline=deadline,
+                        monotonic=self._monotonic,
+                    )
+                    remaining = deadline - self._monotonic()
+                    if remaining <= 0:
                         raise AIProviderTimeoutError("relay request deadline exceeded")
-                    return body, request_id
+                    request = Request(
+                        endpoint,
+                        data=payload,
+                        headers=request_headers,
+                        method="POST",
+                    )
+                    with self._open_response(
+                        request,
+                        endpoint=endpoint,
+                        ip_address=addresses[0],
+                        timeout=min(self.timeout_seconds, remaining),
+                    ) as response:
+                        status = getattr(response, "status", 200)
+                        if status in REDIRECT_HTTP_STATUS:
+                            location = response.headers.get("Location")
+                            if not location:
+                                raise AIProviderError("relay redirect missing location")
+                            redirected = urljoin(endpoint, location)
+                            if _origin(endpoint) != _origin(redirected):
+                                raise AIProviderError("cross-origin redirect blocked")
+                            redirect_count += 1
+                            if redirect_count > MAX_REDIRECTS:
+                                raise AIProviderError("relay redirect limit exceeded")
+                            endpoint = redirected
+                            continue
+                        if not 200 <= status < 300:
+                            raise HTTPError(
+                                endpoint,
+                                status,
+                                "relay error",
+                                response.headers,
+                                response,
+                            )
+                        advertised = response.headers.get("Content-Length")
+                        if advertised is not None:
+                            try:
+                                advertised_size = int(advertised)
+                            except (TypeError, ValueError):
+                                advertised_size = 0
+                            if advertised_size > self.max_response_bytes:
+                                raise AIProviderError(
+                                    "relay response exceeded size limit"
+                                )
+                        return self._read_response(
+                            response, deadline=deadline
+                        ), request_id
             except HTTPError as exc:
                 category = f"http_{exc.code}"
                 retryable = exc.code in RETRYABLE_HTTP_STATUS
