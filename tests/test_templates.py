@@ -39,6 +39,16 @@ def image_file(name, color):
     return SimpleUploadedFile(name, stream.getvalue(), content_type="image/png")
 
 
+def test_question_analysis_template_has_versioned_post_contract():
+    template = Path("question_bank/templates/question_bank/question_analysis.html").read_text(encoding="utf-8")
+
+    assert 'name="analysis_version"' in template
+    assert 'name="input_fingerprint"' in template
+    assert "data-question-analysis" in template
+    assert "question-analysis.js" in template
+    assert "确认功能将在下一阶段开放" in template
+
+
 @pytest.mark.django_db
 def test_question_list_exposes_study_desk_navigation_search_and_mathjax(client, subject):
     response = client.get(reverse("question-list"), {"q": "极限", "subject": subject.pk})

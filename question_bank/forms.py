@@ -23,6 +23,25 @@ class MultipleFileField(forms.FileField):
         return [super().clean(data, initial)]
 
 
+class QuestionAnalysisCorrectionForm(forms.ModelForm):
+    analysis_version = forms.IntegerField(min_value=0, widget=forms.HiddenInput())
+    input_fingerprint = forms.CharField(required=False, widget=forms.HiddenInput())
+
+    class Meta:
+        model = Question
+        fields = ["recognized_statement", "recognized_solution", "personal_signals"]
+        labels = {
+            "recognized_statement": "识别题目",
+            "recognized_solution": "识别解答",
+            "personal_signals": "个人信号",
+        }
+        widgets = {
+            "recognized_statement": forms.Textarea(attrs={"rows": 10}),
+            "recognized_solution": forms.Textarea(attrs={"rows": 12}),
+            "personal_signals": forms.Textarea(attrs={"rows": 5}),
+        }
+
+
 class QuestionForm(forms.ModelForm):
     subject = forms.CharField(label="科目", max_length=100, required=False)
     section = forms.CharField(label="章节", max_length=150, required=False)

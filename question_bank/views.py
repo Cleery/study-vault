@@ -13,9 +13,11 @@ from .attachments import (
     cleanup_unreferenced_files,
     parse_attachment_plan,
 )
-from .forms import KnowledgeCardForm, QuestionForm, QuestionMetadataForm, TagForm, build_core_content
+from .forms import KnowledgeCardForm, QuestionAnalysisCorrectionForm, QuestionForm, QuestionMetadataForm, TagForm, build_core_content
 from .markdown import render_markdown
 from .models import KnowledgeCard, Question, QuestionAttachment, Section, Subject, Tag
+from .ai.config import AIConfig
+from .ai.service import analyze_question
 from .batch_entry import UploadConflict, create_batch_draft
 from django.core.exceptions import ValidationError
 from .review import due_today_questions, get_overdue_questions, get_recent_mistakes, apply_review
@@ -493,6 +495,7 @@ def question_detail(request, pk):
     attachments = list(question.attachments.all())
     context = {
         "question": question,
+        "latest_analysis": question.latest_ai_analysis,
         "question_images": [item for item in attachments if item.attachment_role == "question"],
         "solution_images": [item for item in attachments if item.attachment_role == "solution"],
     }
@@ -503,6 +506,107 @@ def question_detail(request, pk):
         )
     )
     return render(request, "question_bank/question_detail.html", context)
+
+
+def _analysis_items(analysis, field):
+    value = getattr(analysis, field, {}) if analysis else {}
+    return value.get("items", []) if isinstance(value, dict) else []
+
+
+def _analysis_context(question, *, form=None, conflict_message=""):
+    latest = question.latest_ai_analysis
+    version = latest.version if latest else 0
+    fingerprint = latest.input_fingerprint if latest else ""
+    if form is None:
+        form = QuestionAnalysisCorrectionForm(
+            instance=question,
+            initial={"analysis_version": version, "input_fingerprint": fingerprint},
+        )
+    attachments = list(question.attachments.all())
+    return {
+        "question": question,
+        "latest_analysis": latest,
+        "correction_form": form,
+        "question_images": [item for item in attachments if item.attachment_role == "question"],
+        "solution_images": [item for item in attachments if item.attachment_role == "solution"],
+        "knowledge_candidates": _analysis_items(latest, "knowledge_points"),
+        "tag_suggestions": _analysis_items(latest, "suggested_tags"),
+        "missing_cards": _analysis_items(latest, "missing_cards"),
+        "ai_enabled": AIConfig.from_env().enabled,
+        "conflict_message": conflict_message,
+        "current_version": version,
+        "current_fingerprint": fingerprint,
+    }
+
+
+def question_analysis(request, pk):
+    question = get_object_or_404(
+        Question.objects.prefetch_related("attachments", "ai_analyses"),
+        pk=pk,
+        deleted_at__isnull=True,
+    )
+    return render(
+        request,
+        "question_bank/question_analysis.html",
+        _analysis_context(question),
+    )
+
+
+def _analysis_request_is_current(request, question):
+    latest = question.latest_ai_analysis
+    expected_version = latest.version if latest else 0
+    expected_fingerprint = latest.input_fingerprint if latest else ""
+    try:
+        submitted_version = int(request.POST.get("analysis_version", ""))
+    except (TypeError, ValueError):
+        return False
+    return (
+        submitted_version == expected_version
+        and request.POST.get("input_fingerprint", "") == expected_fingerprint
+    )
+
+
+def _analysis_conflict_response(request, question):
+    question = Question.objects.prefetch_related("attachments", "ai_analyses").get(pk=question.pk)
+    return render(
+        request,
+        "question_bank/question_analysis.html",
+        _analysis_context(question, conflict_message="分析结果已经更新，请检查最新版本后重新操作。"),
+        status=409,
+    )
+
+
+@require_POST
+def question_analysis_start(request, pk):
+    with transaction.atomic():
+        question = get_object_or_404(
+            Question.objects.select_for_update(), pk=pk, deleted_at__isnull=True
+        )
+        if not _analysis_request_is_current(request, question):
+            return _analysis_conflict_response(request, question)
+    analyze_question(question)
+    return redirect("question-analysis", pk=question.pk)
+
+
+@require_POST
+def question_analysis_correct(request, pk):
+    with transaction.atomic():
+        question = get_object_or_404(
+            Question.objects.select_for_update(), pk=pk, deleted_at__isnull=True
+        )
+        if not _analysis_request_is_current(request, question):
+            return _analysis_conflict_response(request, question)
+        form = QuestionAnalysisCorrectionForm(request.POST, instance=question)
+        if not form.is_valid():
+            return render(
+                request,
+                "question_bank/question_analysis.html",
+                _analysis_context(question, form=form),
+                status=400,
+            )
+        form.save()
+    analyze_question(question)
+    return redirect("question-analysis", pk=question.pk)
 
 
 @require_POST

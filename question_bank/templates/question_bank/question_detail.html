@@ -6,6 +6,7 @@
     <h1>{{ question.title|default:"未命名题目" }}</h1>
     <p>{% if question.subject %}{{ question.subject }}{% endif %}{% if question.section %} / {{ question.section.name }}{% endif %}</p>
     <a href="{% url 'question-edit' question.pk %}">编辑</a>
+    <a href="{% url 'question-analysis' question.pk %}">AI 分析 · {{ question.get_ai_status_display }}</a>
     <form method="post" action="{% url 'question-archive' question.pk %}" style="display:inline">
       {% csrf_token %}<button type="submit" onclick="return confirm('确认归档此题目吗？')">归档</button>
     </form>

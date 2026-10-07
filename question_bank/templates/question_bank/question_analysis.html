@@ -1,0 +1,30 @@
+{% extends "question_bank/base.html" %}
+{% load static %}
+{% block title %}AI 分析 | {{ question.title|default:"未命名题目" }}{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'question_bank/css/question-form.css' %}">{% endblock %}
+{% block content %}
+<article class="analysis-workbench" data-question-analysis>
+  <header class="analysis-heading">
+    <div><a href="{% url 'question-detail' question.pk %}">返回题目</a><h1>AI 题目分析</h1><p>{{ question.title|default:"未命名题目" }} · {{ question.get_ai_status_display }}{% if latest_analysis %} · 版本 {{ latest_analysis.version }}{% endif %}</p></div>
+    <form method="post" action="{% url 'question-analysis-start' question.pk %}">
+      {% csrf_token %}<input type="hidden" name="analysis_version" value="{{ current_version }}"><input type="hidden" name="input_fingerprint" value="{{ current_fingerprint }}">
+      <button type="submit">{% if latest_analysis %}重新分析{% else %}开始分析{% endif %}</button>
+    </form>
+  </header>
+  {% if conflict_message %}<div class="analysis-notice analysis-notice--error" role="alert">{{ conflict_message }}</div>{% endif %}
+  {% if not ai_enabled %}<div class="analysis-notice"><strong>等待配置</strong><p>AI 当前关闭。题目和校对内容会正常保存，配置模型后可以开始分析。</p></div>{% endif %}
+  {% if latest_analysis.status == "failed" %}<div class="analysis-notice analysis-notice--error"><strong>分析失败</strong><p>{{ latest_analysis.error_message }}</p><p>可以使用上方“重新分析”再次尝试。</p></div>{% endif %}
+
+  <div class="analysis-grid">
+    <section class="analysis-panel"><h2>原始图片</h2><h3>题目图片</h3><div class="analysis-images">{% for attachment in question_images %}<img src="{{ attachment.file.url }}" alt="题目图片 {{ forloop.counter }}">{% empty %}<p>暂无题目图片。</p>{% endfor %}</div><h3>解答图片</h3><div class="analysis-images">{% for attachment in solution_images %}<img src="{{ attachment.file.url }}" alt="解答图片 {{ forloop.counter }}">{% empty %}<p>暂无解答图片。</p>{% endfor %}</div></section>
+    <section class="analysis-panel"><h2>识别文本与个人信号</h2><form method="post" action="{% url 'question-analysis-correct' question.pk %}" data-analysis-correction>{% csrf_token %}{{ correction_form.analysis_version }}{{ correction_form.input_fingerprint }}{% for field in correction_form.visible_fields %}<div class="form-field">{{ field.label_tag }}{{ field }}{{ field.errors }}</div>{% endfor %}<button type="submit">保存校对并生成新版本</button></form></section>
+  </div>
+
+  <section class="analysis-panel"><h2>候选知识卡片</h2><div class="analysis-cards">{% for item in knowledge_candidates %}<article><h3>{{ item.name }}</h3><p>{{ item.reason }}</p><small>置信度：{{ item.confidence }}</small><button type="button" disabled>确认</button> <button type="button" disabled>忽略</button></article>{% empty %}<p>暂无候选卡片。</p>{% endfor %}</div><p class="analysis-placeholder">确认功能将在下一阶段开放。</p></section>
+  <div class="analysis-grid">
+    <section class="analysis-panel"><h2>标签建议</h2><ul>{% for item in tag_suggestions %}<li>{{ item.name }} <small>{{ item.category }} · {{ item.confidence }}</small></li>{% empty %}<li>暂无标签建议。</li>{% endfor %}</ul></section>
+    <section class="analysis-panel"><h2>缺失知识卡片</h2><ul>{% for item in missing_cards %}<li>{{ item.name }} <small>{{ item.type }} · {{ item.confidence }}</small></li>{% empty %}<li>暂无缺失卡片建议。</li>{% endfor %}</ul></section>
+  </div>
+</article>
+<script defer src="{% static 'question_bank/js/question-analysis.js' %}"></script>
+{% endblock %}

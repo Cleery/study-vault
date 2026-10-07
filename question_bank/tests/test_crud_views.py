@@ -7,7 +7,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 from PIL import Image
 
-from question_bank.models import KnowledgeCard, KnowledgeCardPrerequisite, Question, QuestionAttachment, Section, Subject, Tag
+from question_bank.models import KnowledgeCard, KnowledgeCardPrerequisite, Question, QuestionAIAnalysis, QuestionAttachment, Section, Subject, Tag
 
 
 def image_file(name, color):
@@ -39,6 +39,159 @@ def test_draft_question_creation_allows_empty_content(client):
     question = Question.objects.get()
     assert question.draft is True
     assert question.title == ""
+
+
+@pytest.mark.django_db
+def test_question_detail_shows_analysis_status_and_entry(client, subject):
+    question = Question.objects.create(subject=subject, title="待分析题")
+
+    response = client.get(reverse("question-detail", args=[question.pk]))
+
+    body = response.content.decode()
+    assert response.status_code == 200
+    assert "AI 分析" in body
+    assert "待分析" in body
+    assert reverse("question-analysis", args=[question.pk]) in body
+
+
+@pytest.mark.django_db
+def test_analysis_page_shows_images_text_and_all_suggestion_groups(client, subject, settings, tmp_path):
+    settings.MEDIA_ROOT = tmp_path / "media"
+    question = Question.objects.create(
+        subject=subject,
+        title="分析题",
+        recognized_statement="校对题干",
+        recognized_solution="校对解答",
+        personal_signals="看到不等式联想到放缩",
+    )
+    QuestionAttachment.objects.create(
+        question=question, file=image_file("question.png", "white"), attachment_role="question"
+    )
+    QuestionAttachment.objects.create(
+        question=question, file=image_file("solution.png", "blue"), attachment_role="solution", sort_order=1
+    )
+    QuestionAIAnalysis.objects.create(
+        question=question,
+        version=1,
+        input_fingerprint="a" * 64,
+        status=Question.AI_STATUS_AWAITING_REVIEW,
+        knowledge_points={"items": [{"name": "夹逼准则", "confidence": 0.92, "reason": "出现不等式"}]},
+        suggested_tags={"items": [{"name": "放缩", "category": "method", "confidence": 0.9}]},
+        missing_cards={"items": [{"name": "局部放缩技巧", "type": "other", "confidence": 0.72}]},
+    )
+
+    response = client.get(reverse("question-analysis", args=[question.pk]))
+
+    body = response.content.decode()
+    assert response.status_code == 200
+    for expected in ("题目图片", "解答图片", "校对题干", "校对解答", "看到不等式联想到放缩", "候选知识卡片", "夹逼准则", "标签建议", "放缩", "缺失知识卡片", "局部放缩技巧"):
+        assert expected in body
+
+
+@pytest.mark.django_db
+def test_analysis_page_explains_waiting_for_configuration_when_ai_is_disabled(client, subject, monkeypatch):
+    monkeypatch.setenv("AI_ENABLED", "false")
+    question = Question.objects.create(subject=subject, title="等待配置")
+
+    response = client.get(reverse("question-analysis", args=[question.pk]))
+
+    assert response.status_code == 200
+    assert "等待配置" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_failed_analysis_shows_error_and_retry_action(client, subject):
+    question = Question.objects.create(subject=subject, title="失败题", ai_status=Question.AI_STATUS_FAILED)
+    analysis = QuestionAIAnalysis.objects.create(
+        question=question,
+        version=1,
+        input_fingerprint="b" * 64,
+        status=Question.AI_STATUS_FAILED,
+        error_message="模型暂时不可用",
+    )
+
+    response = client.get(reverse("question-analysis", args=[question.pk]))
+
+    body = response.content.decode()
+    assert "模型暂时不可用" in body
+    assert "重新分析" in body
+    assert f'value="{analysis.version}"' in body
+    assert f'value="{analysis.input_fingerprint}"' in body
+
+
+@pytest.mark.django_db
+def test_start_analysis_is_post_only_and_does_not_run_during_question_save(client, subject, monkeypatch):
+    calls = []
+    monkeypatch.setattr("question_bank.views.analyze_question", lambda question: calls.append(question.pk))
+    question = Question.objects.create(subject=subject, title="原题")
+    token = client.get(reverse("question-edit", args=[question.pk])).context["question_version"]
+
+    save_response = client.post(
+        reverse("question-edit", args=[question.pk]),
+        {"save_intent": "draft", "title": "已保存", "question_version": token},
+    )
+    get_response = client.get(reverse("question-analysis-start", args=[question.pk]))
+
+    assert save_response.status_code == 302
+    assert get_response.status_code == 405
+    assert calls == []
+
+
+@pytest.mark.django_db
+def test_corrected_analysis_text_creates_new_version(client, subject, monkeypatch):
+    monkeypatch.setenv("AI_ENABLED", "false")
+    question = Question.objects.create(subject=subject, title="校对题", recognized_statement="旧题干")
+    current = QuestionAIAnalysis.objects.create(
+        question=question,
+        version=1,
+        input_fingerprint="c" * 64,
+        status=Question.AI_STATUS_PENDING,
+    )
+
+    response = client.post(
+        reverse("question-analysis-correct", args=[question.pk]),
+        {
+            "recognized_statement": "新题干",
+            "recognized_solution": "新解答",
+            "personal_signals": "看到闭区间想到介值定理",
+            "analysis_version": current.version,
+            "input_fingerprint": current.input_fingerprint,
+        },
+    )
+
+    assert response.status_code == 302
+    question.refresh_from_db()
+    assert question.recognized_statement == "新题干"
+    assert question.recognized_solution == "新解答"
+    assert question.personal_signals == "看到闭区间想到介值定理"
+    assert question.latest_ai_analysis.version == 2
+
+
+@pytest.mark.django_db
+def test_stale_analysis_correction_is_rejected(client, subject):
+    question = Question.objects.create(subject=subject, title="并发校对", recognized_statement="当前文本")
+    old = QuestionAIAnalysis.objects.create(
+        question=question, version=1, input_fingerprint="d" * 64
+    )
+    QuestionAIAnalysis.objects.create(
+        question=question, version=2, input_fingerprint="e" * 64
+    )
+
+    response = client.post(
+        reverse("question-analysis-correct", args=[question.pk]),
+        {
+            "recognized_statement": "过期文本",
+            "recognized_solution": "",
+            "personal_signals": "",
+            "analysis_version": old.version,
+            "input_fingerprint": old.input_fingerprint,
+        },
+    )
+
+    assert response.status_code == 409
+    question.refresh_from_db()
+    assert question.recognized_statement == "当前文本"
+    assert "分析结果已经更新" in response.content.decode()
 
 
 @pytest.mark.django_db
