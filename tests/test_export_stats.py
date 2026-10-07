@@ -1,6 +1,6 @@
 import json
 import zipfile
-from datetime import timedelta
+from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
@@ -265,8 +265,9 @@ def test_backup_checksum_manifest_is_relative_and_verifiable(tmp_path):
 
 
 @pytest.mark.django_db
-def test_stats_page_is_accessible_and_due_includes_later_today(client, subject):
-    now = timezone.now()
+def test_stats_page_is_accessible_and_due_includes_later_today(client, subject, monkeypatch):
+    now = timezone.make_aware(datetime(2026, 10, 8, 12, 0))
+    monkeypatch.setattr("question_bank.stats.timezone.now", lambda: now)
     make_question(subject, "今天稍后到期", next_review_at=now + timedelta(minutes=30))
     response = client.get("/stats/")
     assert response.status_code == 200
