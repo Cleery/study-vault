@@ -517,6 +517,8 @@ def _analysis_items(analysis, field):
 def _review_items(analysis, field, candidate_type):
     items = []
     for raw_item in _analysis_items(analysis, field):
+        if not isinstance(raw_item, dict):
+            continue
         item = dict(raw_item)
         if candidate_type == "knowledge_point":
             item["candidate_key"] = str(item.get("matched_card_id") or "")

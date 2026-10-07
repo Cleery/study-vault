@@ -300,6 +300,34 @@ class MissingKnowledgeCardSuggestion(TimeStampedModel):
         return self.name
 
 
+class AIReviewOwnership(TimeStampedModel):
+    TARGET_TYPE_CHOICES = (
+        ("knowledge_point", "知识卡片关联"),
+        ("tag", "标签关联"),
+    )
+
+    question = models.ForeignKey(
+        Question, on_delete=models.CASCADE, related_name="ai_review_ownerships"
+    )
+    owning_analysis = models.ForeignKey(
+        QuestionAIAnalysis,
+        on_delete=models.CASCADE,
+        related_name="owned_relations",
+    )
+    target_type = models.CharField(max_length=30, choices=TARGET_TYPE_CHOICES)
+    target_id = models.UUIDField()
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["question", "target_type", "target_id"],
+                name="unique_ai_review_owned_relation",
+            )
+        ]
+        indexes = [models.Index(fields=["question", "target_type", "active"])]
+
+
 def question_attachment_upload_to(instance, filename):
     suffix = Path(filename).suffix.lower()
     question_id = getattr(instance, "question_id", None)

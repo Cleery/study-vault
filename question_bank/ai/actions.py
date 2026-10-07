@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from django.db import transaction
+from django.db import IntegrityError, OperationalError, transaction
 
 from question_bank.models import (
+    AIReviewOwnership,
     KnowledgeCard,
     MissingKnowledgeCardSuggestion,
     Question,
@@ -33,6 +34,7 @@ TAG_KIND_BY_AI_CATEGORY = {
     "method": "method",
     "signal": "custom",
 }
+MAX_CANDIDATE_KEY = 255
 
 
 def _items(analysis: QuestionAIAnalysis, field: str) -> list[dict]:
@@ -86,26 +88,55 @@ def _record_action(analysis, action, candidate_type, candidate_key, item, **meta
     return record
 
 
-def _confirmed_relation_is_owned(analysis, candidate_type, candidate_key):
-    confirmed = analysis.actions.filter(
+def _ownership(question, target_type, target_id):
+    return AIReviewOwnership.objects.select_for_update().filter(
+        question=question,
+        target_type=target_type,
+        target_id=target_id,
+        active=True,
+    ).first()
+
+
+def _claim_created_relation(question, analysis, target_type, target_id, relation_created):
+    if not relation_created:
+        return False
+    ownership, created = AIReviewOwnership.objects.select_for_update().get_or_create(
+        question=question,
+        target_type=target_type,
+        target_id=target_id,
+        defaults={"owning_analysis": analysis, "active": True},
+    )
+    if not created and not ownership.active:
+        ownership.owning_analysis = analysis
+        ownership.active = True
+        ownership.save(update_fields=["owning_analysis", "active", "updated_at"])
+        return True
+    return created or ownership.owning_analysis_id == analysis.pk
+
+
+def _through_get_or_create(through, **lookup):
+    try:
+        with transaction.atomic():
+            return through.objects.get_or_create(**lookup)
+    except (IntegrityError, OperationalError):
+        existing = through.objects.filter(**lookup).first()
+        if existing is not None:
+            return existing, False
+        raise InvalidCandidate("关联正在被其他操作修改，请重试。")
+
+
+def _set_confirm_payload(analysis, candidate_type, candidate_key, **values):
+    confirmed = QuestionAIAnalysisAction.objects.filter(
+        analysis=analysis,
         action_type="confirm",
         candidate_type=candidate_type,
         candidate_key=candidate_key,
     ).first()
-    if confirmed is None:
-        return False, None
-    payload = confirmed.payload if isinstance(confirmed.payload, dict) else {}
-    return payload.get("relation_owned", payload.get("relation_added")) is True, confirmed
-
-
-def _release_relation_ownership(confirmed):
-    if confirmed is None:
-        return
-    payload = dict(confirmed.payload) if isinstance(confirmed.payload, dict) else {}
-    payload["relation_owned"] = False
-    payload["relation_added"] = False
-    confirmed.payload = payload
-    confirmed.save(update_fields=["payload", "updated_at"])
+    if confirmed:
+        payload = dict(confirmed.payload) if isinstance(confirmed.payload, dict) else {}
+        payload.update(values)
+        confirmed.payload = payload
+        confirmed.save(update_fields=["payload", "updated_at"])
 
 
 def _review_knowledge(question, analysis, candidate_key, action, item):
@@ -113,13 +144,14 @@ def _review_knowledge(question, analysis, candidate_key, action, item):
         card = KnowledgeCard.objects.get(pk=candidate_key, subject_id=question.subject_id)
     except (KnowledgeCard.DoesNotExist, ValueError) as exc:
         raise InvalidCandidate("候选知识卡片无效。") from exc
+    through = Question.knowledge_cards.through
     if action == "confirm":
-        relation_exists = question.knowledge_cards.filter(pk=card.pk).exists()
-        already_owned, _ = _confirmed_relation_is_owned(
-            analysis, "knowledge_point", candidate_key
+        _, relation_created = _through_get_or_create(through,
+            question_id=question.pk, knowledgecard_id=card.pk
         )
-        relation_owned = already_owned or not relation_exists
-        question.knowledge_cards.add(card)
+        relation_owned = _claim_created_relation(
+            question, analysis, "knowledge_point", card.pk, relation_created
+        )
         return _record_action(
             analysis,
             action,
@@ -128,14 +160,21 @@ def _review_knowledge(question, analysis, candidate_key, action, item):
             item,
             relation_added=relation_owned,
             relation_owned=relation_owned,
+            knowledge_card_id=str(card.pk),
         )
     elif action == "revoke":
-        relation_owned, confirmed = _confirmed_relation_is_owned(
-            analysis, "knowledge_point", candidate_key
-        )
-        if relation_owned:
-            question.knowledge_cards.remove(card)
-            _release_relation_ownership(confirmed)
+        ownership = _ownership(question, "knowledge_point", card.pk)
+        if ownership and ownership.owning_analysis_id == analysis.pk:
+            through.objects.filter(question_id=question.pk, knowledgecard_id=card.pk).delete()
+            ownership.active = False
+            ownership.save(update_fields=["active", "updated_at"])
+            _set_confirm_payload(
+                ownership.owning_analysis,
+                "knowledge_point",
+                candidate_key,
+                relation_owned=False,
+                relation_added=False,
+            )
     return _record_action(analysis, action, "knowledge_point", candidate_key, item)
 
 
@@ -154,13 +193,24 @@ def _review_tag(question, analysis, candidate_key, action, item):
     tag = Tag.objects.filter(name__iexact=name, kind=kind, parent__isnull=True).first()
     if action == "confirm":
         if tag is None:
-            tag = Tag.objects.create(name=name, kind=kind)
+            try:
+                with transaction.atomic():
+                    tag = Tag.objects.create(name=name, kind=kind)
+            except IntegrityError:
+                tag = Tag.objects.filter(
+                    name__iexact=name, kind=kind, parent__isnull=True
+                ).first()
+                if tag is None:
+                    raise InvalidCandidate("并发创建标签失败，请重试。")
         elif tag.archived or tag.redirect_to_id:
             raise InvalidCandidate("同名标签已归档或已合并。")
-        relation_exists = question.tags.filter(pk=tag.pk).exists()
-        already_owned, _ = _confirmed_relation_is_owned(analysis, "tag", candidate_key)
-        relation_owned = already_owned or not relation_exists
-        question.tags.add(tag)
+        through = Question.tags.through
+        _, relation_created = _through_get_or_create(through,
+            question_id=question.pk, tag_id=tag.pk
+        )
+        relation_owned = _claim_created_relation(
+            question, analysis, "tag", tag.pk, relation_created
+        )
         return _record_action(
             analysis,
             action,
@@ -169,14 +219,35 @@ def _review_tag(question, analysis, candidate_key, action, item):
             item,
             relation_added=relation_owned,
             relation_owned=relation_owned,
+            tag_id=str(tag.pk),
         )
-    elif action == "revoke" and tag is not None:
-        relation_owned, confirmed = _confirmed_relation_is_owned(
-            analysis, "tag", candidate_key
-        )
-        if relation_owned:
-            question.tags.remove(tag.resolve_redirect())
-            _release_relation_ownership(confirmed)
+    elif action == "revoke":
+        confirmed = QuestionAIAnalysisAction.objects.filter(
+            analysis=analysis,
+            action_type="confirm",
+            candidate_type="tag",
+            candidate_key=candidate_key,
+        ).first()
+        payload = confirmed.payload if confirmed and isinstance(confirmed.payload, dict) else {}
+        tag_id = payload.get("tag_id")
+        ownership = _ownership(question, "tag", tag_id) if tag_id else None
+        if ownership and ownership.owning_analysis_id == analysis.pk:
+            try:
+                owned_tag = Tag.objects.get(pk=tag_id)
+            except (Tag.DoesNotExist, ValueError, TypeError) as exc:
+                raise InvalidCandidate("标签关联目标已不存在。") from exc
+            Question.tags.through.objects.filter(
+                question_id=question.pk, tag_id=owned_tag.pk
+            ).delete()
+            ownership.active = False
+            ownership.save(update_fields=["active", "updated_at"])
+            _set_confirm_payload(
+                ownership.owning_analysis,
+                "tag",
+                candidate_key,
+                relation_owned=False,
+                relation_added=False,
+            )
     return _record_action(analysis, action, "tag", candidate_key, item)
 
 
@@ -186,6 +257,9 @@ def _review_missing(analysis, candidate_key, action, item):
         card_type = str(item.get("card_type", item.get("type", "other")) or "other")
         if not name or len(name) > 255:
             raise InvalidCandidate("待建立知识卡片名称无效。")
+        allowed_types = {value for value, _ in KnowledgeCard.CARD_TYPE_CHOICES}
+        if card_type not in allowed_types:
+            raise InvalidCandidate("待建立知识卡片类型无效。")
         MissingKnowledgeCardSuggestion.objects.get_or_create(
             analysis=analysis,
             candidate_key=candidate_key,
@@ -196,11 +270,11 @@ def _review_missing(analysis, candidate_key, action, item):
             },
         )
     elif action == "revoke":
-        MissingKnowledgeCardSuggestion.objects.filter(
+        MissingKnowledgeCardSuggestion.objects.select_for_update().filter(
             analysis=analysis,
             candidate_key=candidate_key,
             status=MissingKnowledgeCardSuggestion.STATUS_PENDING,
-        ).delete()
+        ).update(status=MissingKnowledgeCardSuggestion.STATUS_DISMISSED)
     return _record_action(analysis, action, "missing_card", candidate_key, item)
 
 
@@ -213,16 +287,47 @@ def review_candidate(
 ) -> QuestionAIAnalysisAction:
     if action not in {"confirm", "ignore", "revoke"}:
         raise InvalidCandidate("审核动作无效。")
+    if not isinstance(candidate_key, str) or not candidate_key or len(candidate_key) > MAX_CANDIDATE_KEY:
+        raise InvalidCandidate("候选标识无效。")
     question = Question.objects.select_for_update().get(pk=analysis.question_id)
     locked_analysis = QuestionAIAnalysis.objects.select_for_update().get(
         pk=analysis.pk, question_id=question.pk
     )
     latest = question.ai_analyses.order_by("-version", "-id").first()
-    if latest is None or latest.pk != locked_analysis.pk:
-        raise StaleAnalysis("分析版本已经更新。")
+    if locked_analysis.status not in {
+        Question.AI_STATUS_AWAITING_REVIEW,
+        Question.AI_STATUS_COMPLETED,
+    }:
+        raise InvalidCandidate("当前分析状态不允许审核。")
     item = _find_candidate(locked_analysis, candidate_type, candidate_key)
     if candidate_type == "tag":
         _tag_values(item)
+    previous = locked_analysis.actions.order_by("-updated_at", "-id").first()
+    if action == "ignore" and previous and previous.action_type == "confirm":
+            raise InvalidCandidate("已确认的候选不能再忽略。")
+    if action == "ignore" and previous and previous.action_type == "revoke":
+        raise InvalidCandidate("已撤销的候选不能再忽略。")
+    if action == "revoke" and previous and previous.action_type == "revoke":
+        return previous
+    if action == "revoke" and (previous is None or previous.action_type != "confirm"):
+        raise InvalidCandidate("只有已确认的候选才能撤销。")
+    if action == "confirm" and previous and previous.action_type == "confirm":
+        target_id = previous.payload.get("knowledge_card_id") or previous.payload.get("tag_id")
+        target_type = "knowledge_point" if candidate_type == "knowledge_point" else "tag"
+        active_ownership = _ownership(question, target_type, target_id) if target_id else None
+        if active_ownership:
+            return previous
+        relation_exists = (
+            question.knowledge_cards.filter(pk=target_id).exists()
+            if candidate_type == "knowledge_point" and target_id
+            else question.tags.filter(pk=target_id).exists()
+            if candidate_type == "tag" and target_id
+            else False
+        )
+        if relation_exists:
+            return previous
+    if action == "confirm" and previous and previous.action_type == "ignore":
+        previous.delete()
     if action == "ignore":
         return _record_action(locked_analysis, action, candidate_type, candidate_key, item)
     if candidate_type == "knowledge_point":

@@ -275,6 +275,7 @@ def test_second_revoke_keeps_knowledge_link_manually_restored_after_revoke(subje
     confirm = analysis.actions.get(
         action_type="confirm", candidate_type="knowledge_point", candidate_key=str(card.pk)
     )
+    confirm.refresh_from_db()
     assert confirm.payload["relation_owned"] is False
     question.knowledge_cards.add(card)
     review_candidate(analysis, "knowledge_point", str(card.pk), "revoke")
@@ -340,6 +341,7 @@ def test_second_revoke_keeps_tag_manually_restored_after_revoke(subject):
     confirm = analysis.actions.get(
         action_type="confirm", candidate_type="tag", candidate_key="method:放缩"
     )
+    confirm.refresh_from_db()
     assert confirm.payload["relation_owned"] is False
     question.tags.add(tag)
     review_candidate(analysis, "tag", "method:放缩", "revoke")
@@ -368,6 +370,69 @@ def test_later_confirm_can_own_tag_after_manual_link_was_removed(subject):
     review_candidate(analysis, "tag", "method:构造函数", "revoke")
 
     assert not question.tags.filter(pk=tag.pk).exists()
+
+
+@pytest.mark.django_db
+def test_tag_review_uses_tag_id_after_rename_and_name_reuse(subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="标签改名复用")
+    analysis = _review_analysis(
+        question,
+        tags=[{"name": "原标签", "category": "method", "confidence": 0.9}],
+    )
+    review_candidate(analysis, "tag", "method:原标签", "confirm")
+    old_tag = Tag.objects.get(name="原标签", kind="method")
+    old_tag.name = "改名标签"
+    old_tag.save(update_fields=["name", "updated_at"])
+    replacement = Tag.objects.create(name="原标签", kind="method")
+
+    review_candidate(analysis, "tag", "method:原标签", "revoke")
+
+    assert not question.tags.filter(pk=old_tag.pk).exists()
+    assert not question.tags.filter(pk=replacement.pk).exists()
+    action = analysis.actions.get(action_type="confirm", candidate_type="tag")
+    assert action.payload["tag_id"] == str(old_tag.pk)
+
+
+@pytest.mark.django_db
+def test_review_ownership_is_shared_across_analysis_versions(subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="跨版本所有权")
+    card = KnowledgeCard.objects.create(subject=subject, name="跨版本定理", type="theorem")
+    first = _review_analysis(
+        question,
+        knowledge=[{"name": card.name, "matched_card_id": str(card.pk), "confidence": 0.9}],
+    )
+    review_candidate(first, "knowledge_point", str(card.pk), "confirm")
+    second = QuestionAIAnalysis.objects.create(
+        question=question,
+        version=2,
+        input_fingerprint="2" * 64,
+        status=Question.AI_STATUS_AWAITING_REVIEW,
+        knowledge_points={"items": [{"name": card.name, "matched_card_id": str(card.pk), "confidence": 0.9}]},
+    )
+    second_result = review_candidate(second, "knowledge_point", str(card.pk), "confirm")
+    assert second_result.payload["relation_owned"] is False
+    review_candidate(second, "knowledge_point", str(card.pk), "revoke")
+    assert question.knowledge_cards.filter(pk=card.pk).exists()
+    review_candidate(first, "knowledge_point", str(card.pk), "revoke")
+    assert not question.knowledge_cards.filter(pk=card.pk).exists()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("candidate_type,item,key", [
+    ("missing_card", {"name": "无效类型", "card_type": "bogus", "confidence": 0.8}, "bogus:无效类型"),
+    ("missing_card", {"name": "超长键", "card_type": "other", "confidence": 0.8}, "other:" + "x" * 300),
+])
+def test_review_rejects_invalid_candidate_boundaries(subject, candidate_type, item, key):
+    from question_bank.ai.actions import InvalidCandidate, review_candidate
+
+    question = Question.objects.create(subject=subject, title="候选边界")
+    analysis = _review_analysis(question, missing=[item])
+    with pytest.raises(InvalidCandidate):
+        review_candidate(analysis, candidate_type, key, "confirm")
 
 
 @pytest.mark.django_db
