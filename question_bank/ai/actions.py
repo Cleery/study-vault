@@ -299,6 +299,8 @@ def review_candidate(
         pk=analysis.pk, question_id=question.pk
     )
     latest = question.ai_analyses.order_by("-version", "-id").first()
+    if latest is None or latest.pk != locked_analysis.pk:
+        raise StaleAnalysis("只能审核最新分析版本。")
     if locked_analysis.status not in {
         Question.AI_STATUS_AWAITING_REVIEW,
         Question.AI_STATUS_COMPLETED,

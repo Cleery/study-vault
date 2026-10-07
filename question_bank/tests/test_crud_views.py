@@ -211,6 +211,70 @@ def test_corrected_analysis_text_creates_new_version(client, subject, monkeypatc
 
 
 @pytest.mark.django_db
+def test_reanalysis_and_correction_explicitly_force_new_versions(
+    client, subject, monkeypatch
+):
+    calls = []
+
+    def capture(question, *, force=False):
+        calls.append((question.pk, force))
+
+    monkeypatch.setattr("question_bank.views.analyze_question", capture)
+    question = Question.objects.create(subject=subject, title="显式强制版本")
+    current = QuestionAIAnalysis.objects.create(
+        question=question,
+        version=1,
+        input_fingerprint="f" * 64,
+        status=Question.AI_STATUS_AWAITING_REVIEW,
+    )
+    version = {
+        "analysis_version": current.version,
+        "input_fingerprint": current.input_fingerprint,
+    }
+
+    start = client.post(
+        reverse("question-analysis-start", args=[question.pk]),
+        version,
+    )
+    correction = client.post(
+        reverse("question-analysis-correct", args=[question.pk]),
+        {
+            **version,
+            "recognized_statement": "",
+            "recognized_solution": "",
+            "personal_signals": "",
+        },
+    )
+
+    assert start.status_code == 302
+    assert correction.status_code == 302
+    assert calls == [(question.pk, True), (question.pk, True)]
+
+
+@pytest.mark.django_db
+def test_empty_user_correction_form_uses_latest_model_recognition_as_suggestion(
+    client, subject
+):
+    question = Question.objects.create(subject=subject, title="模型识别回显")
+    QuestionAIAnalysis.objects.create(
+        question=question,
+        version=1,
+        input_fingerprint="m" * 64,
+        status=Question.AI_STATUS_AWAITING_REVIEW,
+        recognized_statement="模型识别题干",
+        recognized_solution="模型识别解答",
+    )
+
+    response = client.get(reverse("question-analysis", args=[question.pk]))
+
+    assert response.context["correction_form"].initial["recognized_statement"] == "模型识别题干"
+    assert response.context["correction_form"].initial["recognized_solution"] == "模型识别解答"
+    question.refresh_from_db()
+    assert question.recognized_statement == ""
+    assert question.recognized_solution == ""
+
+
+@pytest.mark.django_db
 def test_stale_analysis_correction_is_rejected(client, subject):
     question = Question.objects.create(subject=subject, title="并发校对", recognized_statement="当前文本")
     old = QuestionAIAnalysis.objects.create(

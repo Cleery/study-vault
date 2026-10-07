@@ -594,9 +594,17 @@ def _analysis_context(question, *, form=None, conflict_message=""):
     version = latest.version if latest else 0
     fingerprint = latest.input_fingerprint if latest else ""
     if form is None:
+        initial = {
+            "analysis_version": version,
+            "input_fingerprint": fingerprint,
+        }
+        if latest is not None and not question.recognized_statement:
+            initial["recognized_statement"] = latest.recognized_statement
+        if latest is not None and not question.recognized_solution:
+            initial["recognized_solution"] = latest.recognized_solution
         form = QuestionAnalysisCorrectionForm(
             instance=question,
-            initial={"analysis_version": version, "input_fingerprint": fingerprint},
+            initial=initial,
         )
     attachments = list(question.attachments.all())
     analysis_summary = None
@@ -661,13 +669,15 @@ def _analysis_conflict_response(request, question):
 
 @require_POST
 def question_analysis_start(request, pk):
+    force = False
     with transaction.atomic():
         question = get_object_or_404(
             Question.objects.select_for_update(), pk=pk, deleted_at__isnull=True
         )
         if not _analysis_request_is_current(request, question):
             return _analysis_conflict_response(request, question)
-    analyze_question(question)
+        force = question.latest_ai_analysis is not None
+    analyze_question(question, force=force)
     return redirect("question-analysis", pk=question.pk)
 
 
@@ -688,7 +698,7 @@ def question_analysis_correct(request, pk):
                 status=400,
             )
         form.save()
-    analyze_question(question)
+    analyze_question(question, force=True)
     return redirect("question-analysis", pk=question.pk)
 
 

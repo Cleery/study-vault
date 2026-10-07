@@ -188,27 +188,30 @@ def analyze_question(
     *,
     provider: AnalysisProvider | None = None,
     config: AIConfig | None = None,
+    force: bool = False,
 ) -> QuestionAIAnalysis:
     """Analyze one question, reusing an existing result for identical input."""
 
     config = (config or AIConfig.from_env()).validated()
     cards = list(KnowledgeCard.objects.filter(subject_id=question.subject_id))
     fingerprint = _fingerprint(question, cards)
-    existing = question.ai_analyses.exclude(
-        status=Question.AI_STATUS_FAILED
-    ).filter(input_fingerprint=fingerprint).order_by("-version").first()
-    if existing is not None:
-        return existing
+    if not force:
+        existing = question.ai_analyses.exclude(
+            status=Question.AI_STATUS_FAILED
+        ).filter(input_fingerprint=fingerprint).order_by("-version").first()
+        if existing is not None:
+            return existing
 
     with transaction.atomic():
         locked = Question.objects.select_for_update().get(pk=question.pk)
         cards = list(KnowledgeCard.objects.filter(subject_id=locked.subject_id))
         fingerprint = _fingerprint(locked, cards)
-        existing = locked.ai_analyses.exclude(
-            status=Question.AI_STATUS_FAILED
-        ).filter(input_fingerprint=fingerprint).order_by("-version").first()
-        if existing is not None:
-            return existing
+        if not force:
+            existing = locked.ai_analyses.exclude(
+                status=Question.AI_STATUS_FAILED
+            ).filter(input_fingerprint=fingerprint).order_by("-version").first()
+            if existing is not None:
+                return existing
         while True:
             analysis, created = QuestionAIAnalysis.objects.get_or_create(
                 question=locked,
@@ -352,8 +355,6 @@ def analyze_question(
                 ai_status=Question.AI_STATUS_ANALYZING,
             ).update(
                 ai_status=result.status.value,
-                recognized_statement=result.recognized_statement,
-                recognized_solution=result.recognized_solution,
             )
         analysis.refresh_from_db()
         return analysis

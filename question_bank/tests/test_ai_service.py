@@ -353,6 +353,86 @@ def test_analysis_is_idempotent_and_text_change_creates_version(subject):
 
 
 @pytest.mark.django_db
+def test_force_analysis_creates_new_version_for_identical_input(subject):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question
+
+    question = Question.objects.create(
+        subject=subject,
+        title="强制重分析",
+        recognized_statement="保持相同的校对文本",
+    )
+    config = AIConfig(enabled=True, provider="placeholder")
+
+    first = analyze_question(question, config=config)
+    forced = analyze_question(question, config=config, force=True)
+
+    assert forced.pk != first.pk
+    assert forced.version == first.version + 1
+
+
+@pytest.mark.django_db
+def test_provider_recognition_never_overwrites_user_corrected_fields(subject):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question
+
+    question = Question.objects.create(
+        subject=subject,
+        title="识别字段隔离",
+        recognized_statement="人工题干",
+        recognized_solution="人工解答",
+    )
+
+    class ModelRecognitionProvider(SpyProvider):
+        def analyze(self, **kwargs):
+            payload = super().analyze(**kwargs)
+            payload["recognized_statement"] = "模型题干"
+            payload["recognized_solution"] = "模型解答"
+            return payload
+
+    analysis = analyze_question(
+        question,
+        provider=ModelRecognitionProvider(),
+        config=AIConfig(enabled=True),
+    )
+
+    question.refresh_from_db()
+    assert analysis.recognized_statement == "模型题干"
+    assert analysis.recognized_solution == "模型解答"
+    assert question.recognized_statement == "人工题干"
+    assert question.recognized_solution == "人工解答"
+
+
+@pytest.mark.django_db
+def test_domain_review_rejects_non_latest_analysis(subject):
+    from question_bank.ai.actions import StaleAnalysis, review_candidate
+
+    question = Question.objects.create(subject=subject, title="领域层旧版本")
+    card = KnowledgeCard.objects.create(subject=subject, name="旧版本卡片", type="theorem")
+    old = _review_analysis(
+        question,
+        knowledge=[
+            {
+                "name": card.name,
+                "matched_card_id": str(card.pk),
+                "confidence": 0.8,
+            }
+        ],
+    )
+    QuestionAIAnalysis.objects.create(
+        question=question,
+        version=2,
+        input_fingerprint="2" * 64,
+        status=Question.AI_STATUS_AWAITING_REVIEW,
+    )
+
+    with pytest.raises(StaleAnalysis):
+        review_candidate(old, "knowledge_point", str(card.pk), "confirm")
+
+    assert not question.knowledge_cards.filter(pk=card.pk).exists()
+
+
+@pytest.mark.django_db
 def test_old_provider_result_does_not_write_back_after_input_changes(subject):
     from question_bank.ai.config import AIConfig
     from question_bank.ai.service import analyze_question
@@ -662,7 +742,7 @@ def test_tag_review_uses_tag_id_after_rename_and_name_reuse(subject):
 
 @pytest.mark.django_db
 def test_review_ownership_is_shared_across_analysis_versions(subject):
-    from question_bank.ai.actions import review_candidate
+    from question_bank.ai.actions import StaleAnalysis, review_candidate
 
     question = Question.objects.create(subject=subject, title="跨版本所有权")
     card = KnowledgeCard.objects.create(subject=subject, name="跨版本定理", type="theorem")
@@ -682,8 +762,9 @@ def test_review_ownership_is_shared_across_analysis_versions(subject):
     assert second_result.payload["relation_owned"] is False
     review_candidate(second, "knowledge_point", str(card.pk), "revoke")
     assert question.knowledge_cards.filter(pk=card.pk).exists()
-    review_candidate(first, "knowledge_point", str(card.pk), "revoke")
-    assert not question.knowledge_cards.filter(pk=card.pk).exists()
+    with pytest.raises(StaleAnalysis):
+        review_candidate(first, "knowledge_point", str(card.pk), "revoke")
+    assert question.knowledge_cards.filter(pk=card.pk).exists()
 
 
 @pytest.mark.django_db
@@ -829,7 +910,7 @@ def test_revoke_keeps_relation_manually_rebuilt_after_external_remove(subject, c
 
 @pytest.mark.django_db
 def test_ownership_migration_resolves_legacy_tag_and_uses_latest_confirm(subject):
-    from question_bank.ai.actions import review_candidate
+    from question_bank.ai.actions import StaleAnalysis, review_candidate
     from question_bank.models import AIReviewOwnership
 
     question = Question.objects.create(subject=subject, title="旧审核迁移")
@@ -882,8 +963,9 @@ def test_ownership_migration_resolves_legacy_tag_and_uses_latest_confirm(subject
     assert owned_action.payload["tag_id"] == str(tag.pk)
     assert unowned_action.payload["tag_id"] == str(tag.pk)
 
-    review_candidate(first, "tag", "method:旧标签", "revoke")
-    assert not question.tags.filter(pk=tag.pk).exists()
+    with pytest.raises(StaleAnalysis):
+        review_candidate(first, "tag", "method:旧标签", "revoke")
+    assert question.tags.filter(pk=tag.pk).exists()
 
 
 @pytest.mark.django_db
