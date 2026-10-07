@@ -10,6 +10,8 @@ from django.utils import timezone
 from question_bank.models import (
     KnowledgeCard,
     Question,
+    QuestionAIAnalysis,
+    QuestionAIAnalysisAction,
     QuestionAttachment,
     ReviewRecord,
     Section,
@@ -81,6 +83,74 @@ def test_question_attachment_supports_question_and_solution_roles(subject):
     )
     assert question_image.attachment_role == "question"
     assert solution_image.attachment_role == "solution"
+
+
+@pytest.mark.django_db
+def test_question_ai_fields_have_pending_status_and_corrected_text(subject):
+    question = Question.objects.create(
+        subject=subject,
+        title="待分析题目",
+        recognized_statement="校对后的题干",
+        recognized_solution="校对后的解法",
+        personal_signals="看到不等式就联想到放缩",
+    )
+    assert question.ai_status == "pending"
+    assert question.recognized_statement == "校对后的题干"
+    assert question.recognized_solution == "校对后的解法"
+    assert question.personal_signals == "看到不等式就联想到放缩"
+
+
+@pytest.mark.django_db
+def test_question_ai_analysis_versions_are_unique_and_keep_history(subject):
+    question = Question.objects.create(subject=subject, title="重分析题目")
+    first = QuestionAIAnalysis.objects.create(
+        question=question,
+        version=1,
+        input_fingerprint="a" * 64,
+        status="awaiting_review",
+        provider="placeholder",
+        model="placeholder-model",
+        recognized_statement="题干",
+        recognized_solution="解法",
+        knowledge_points={"items": [{"name": "介值定理"}]},
+        suggested_tags={"items": [{"name": "证明", "category": "method"}]},
+        missing_cards={},
+        raw_response={"ok": True},
+    )
+    second = QuestionAIAnalysis.objects.create(
+        question=question,
+        version=2,
+        input_fingerprint="b" * 64,
+        status="completed",
+    )
+    assert list(question.ai_analyses.order_by("version")) == [first, second]
+    assert question.latest_ai_analysis == second
+    with pytest.raises(Exception):
+        QuestionAIAnalysis.objects.create(
+            question=question,
+            version=2,
+            input_fingerprint="c" * 64,
+        )
+
+
+@pytest.mark.django_db
+def test_question_ai_analysis_action_records_review_and_edit_payload(subject):
+    question = Question.objects.create(subject=subject, title="审核题目")
+    analysis = QuestionAIAnalysis.objects.create(
+        question=question,
+        version=1,
+        input_fingerprint="a" * 64,
+    )
+    action = QuestionAIAnalysisAction.objects.create(
+        analysis=analysis,
+        action_type="edit",
+        candidate_type="knowledge_point",
+        candidate_key="介值定理",
+        payload={"name": "连续函数零点定理"},
+    )
+    assert action.analysis == analysis
+    assert action.action_type == "edit"
+    assert action.payload["name"] == "连续函数零点定理"
 
 
 @pytest.mark.django_db

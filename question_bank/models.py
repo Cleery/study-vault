@@ -76,6 +76,19 @@ class Question(TimeStampedModel):
         (MASTERY_MASTERED, "熟练掌握"),
     )
 
+    AI_STATUS_PENDING = "pending"
+    AI_STATUS_ANALYZING = "analyzing"
+    AI_STATUS_AWAITING_REVIEW = "awaiting_review"
+    AI_STATUS_COMPLETED = "completed"
+    AI_STATUS_FAILED = "failed"
+    AI_STATUS_CHOICES = (
+        (AI_STATUS_PENDING, "待分析"),
+        (AI_STATUS_ANALYZING, "分析中"),
+        (AI_STATUS_AWAITING_REVIEW, "待审核"),
+        (AI_STATUS_COMPLETED, "已完成"),
+        (AI_STATUS_FAILED, "失败"),
+    )
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     batch_id = models.UUIDField(null=True, blank=True, db_index=True)
     subject = models.ForeignKey(
@@ -102,6 +115,12 @@ class Question(TimeStampedModel):
     draft = models.BooleanField(default=True)
     archived = models.BooleanField(default=False)
     deleted_at = models.DateTimeField(null=True, blank=True)
+    ai_status = models.CharField(
+        max_length=30, choices=AI_STATUS_CHOICES, default=AI_STATUS_PENDING
+    )
+    recognized_statement = models.TextField(blank=True)
+    recognized_solution = models.TextField(blank=True)
+    personal_signals = models.TextField(blank=True)
     tags = models.ManyToManyField("Tag", related_name="questions", blank=True)
     knowledge_cards = models.ManyToManyField(
         "KnowledgeCard", related_name="questions", blank=True
@@ -142,6 +161,93 @@ class Question(TimeStampedModel):
 
     def __str__(self):
         return self.title or f"题目 {self.pk}"
+
+    @property
+    def latest_ai_analysis(self):
+        return self.ai_analyses.order_by("-version", "-id").first()
+
+
+class QuestionAIAnalysis(TimeStampedModel):
+    """One immutable analysis attempt for a question.
+
+    A new version is created whenever the source images or corrected text
+    changes.  JSON fields intentionally default to objects so partial provider
+    responses can be retained without null checks.
+    """
+
+    STATUS_CHOICES = Question.AI_STATUS_CHOICES
+
+    question = models.ForeignKey(
+        Question, on_delete=models.CASCADE, related_name="ai_analyses"
+    )
+    version = models.PositiveIntegerField()
+    input_fingerprint = models.CharField(max_length=64)
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default=Question.AI_STATUS_PENDING)
+    provider = models.CharField(max_length=100, blank=True)
+    model = models.CharField(max_length=150, blank=True)
+    recognized_statement = models.TextField(blank=True)
+    recognized_solution = models.TextField(blank=True)
+    knowledge_points = models.JSONField(default=dict)
+    suggested_tags = models.JSONField(default=dict)
+    missing_cards = models.JSONField(default=dict)
+    raw_response = models.JSONField(default=dict)
+    error_message = models.TextField(blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-version", "-created_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["question", "version"],
+                name="unique_question_ai_analysis_version",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["question", "-version"]),
+            models.Index(fields=["status", "-created_at"]),
+            models.Index(fields=["input_fingerprint"]),
+        ]
+
+    def __str__(self):
+        return f"{self.question} · AI 分析 v{self.version}"
+
+
+class QuestionAIAnalysisAction(TimeStampedModel):
+    ACTION_CONFIRM = "confirm"
+    ACTION_IGNORE = "ignore"
+    ACTION_REVOKE = "revoke"
+    ACTION_EDIT = "edit"
+    ACTION_CHOICES = (
+        (ACTION_CONFIRM, "确认"),
+        (ACTION_IGNORE, "忽略"),
+        (ACTION_REVOKE, "撤销"),
+        (ACTION_EDIT, "编辑"),
+    )
+    CANDIDATE_TYPE_CHOICES = (
+        ("knowledge_point", "知识点"),
+        ("tag", "标签"),
+        ("missing_card", "待建立卡片"),
+    )
+
+    analysis = models.ForeignKey(
+        QuestionAIAnalysis,
+        on_delete=models.CASCADE,
+        related_name="actions",
+    )
+    action_type = models.CharField(max_length=20, choices=ACTION_CHOICES)
+    candidate_type = models.CharField(max_length=30, choices=CANDIDATE_TYPE_CHOICES)
+    candidate_key = models.CharField(max_length=255)
+    payload = models.JSONField(default=dict)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [
+            models.Index(fields=["analysis", "candidate_type", "candidate_key"]),
+            models.Index(fields=["action_type", "-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.get_action_type_display()} · {self.candidate_key}"
 
 
 def question_attachment_upload_to(instance, filename):
