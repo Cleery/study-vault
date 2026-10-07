@@ -69,6 +69,7 @@ def test_gunicorn_service_runs_preflight_and_one_worker():
     assert "EnvironmentFile=/etc/math-question-bank.env" in service
     assert "ExecStartPre=" in service and "check-production-config.py" in service
     assert "--workers 1" in service
+    assert "--timeout 240" in service
     assert "config.wsgi:application" in service
 
 

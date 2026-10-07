@@ -70,6 +70,29 @@ def test_ai_disabled_does_not_call_provider(subject):
     assert analysis.provider == ""
 
 
+@pytest.mark.django_db
+def test_provider_construction_failure_marks_analysis_failed(subject, monkeypatch):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question
+
+    question = Question.objects.create(subject=subject, title="Provider 配置错误")
+    monkeypatch.setattr(
+        "question_bank.ai.service.provider_for_config",
+        lambda config: (_ for _ in ()).throw(ValueError("secret constructor detail")),
+    )
+
+    analysis = analyze_question(
+        question,
+        config=AIConfig(enabled=True, api_key="constructor-secret"),
+    )
+
+    question.refresh_from_db()
+    assert analysis.status == Question.AI_STATUS_FAILED
+    assert question.ai_status == Question.AI_STATUS_FAILED
+    assert analysis.error_message == "AI Provider 配置无效，请检查服务配置。"
+    assert "constructor-secret" not in analysis.error_message
+
+
 def test_raw_response_retention_defaults_to_thirty_days(monkeypatch):
     from question_bank.ai.config import AIConfig
 
@@ -302,7 +325,9 @@ def test_keyword_matching_uses_all_knowledge_card_fields(subject, field_name, fi
         recognized_statement=field_value,
         recognized_solution="",
     )
-    analysis = analyze_question(question, config=AIConfig(enabled=True))
+    analysis = analyze_question(
+        question, config=AIConfig(enabled=True, provider="placeholder")
+    )
     items = analysis.knowledge_points["items"]
     assert any(item["matched_card_id"] == str(card.pk) for item in items)
 
@@ -313,7 +338,7 @@ def test_analysis_is_idempotent_and_text_change_creates_version(subject):
     from question_bank.ai.service import analyze_question
 
     question = Question.objects.create(subject=subject, title="版本题", recognized_statement="原文")
-    config = AIConfig(enabled=True)
+    config = AIConfig(enabled=True, provider="placeholder")
     first = analyze_question(question, config=config)
     repeated = analyze_question(question, config=config)
     assert repeated.pk == first.pk

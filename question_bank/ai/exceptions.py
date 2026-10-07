@@ -13,5 +13,9 @@ class AIProviderError(AIError):
     """A provider could not produce an analysis result."""
 
 
+class AIProviderTimeoutError(AIProviderError, TimeoutError):
+    """The provider exhausted its bounded timeout retries."""
+
+
 class AIConcurrencyError(AIError):
     """An analysis result was superseded by a newer input version."""

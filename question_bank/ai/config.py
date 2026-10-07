@@ -28,6 +28,17 @@ def _env_int(name: str, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+def _env_nonnegative_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return parsed if parsed >= 0 else default
+
+
 def _env_float(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None or not value.strip():
@@ -50,6 +61,8 @@ class AIConfig:
     vision_model: str = "placeholder-vision-model"
     analysis_model: str = "placeholder-analysis-model"
     timeout_seconds: int = 60
+    max_retries: int = 2
+    max_response_bytes: int = 2 * 1024 * 1024
     raw_response_retention_days: int = 30
     auto_link_threshold: float = 0.9
     review_threshold: float = 0.7
@@ -66,6 +79,10 @@ class AIConfig:
             analysis_model=os.getenv("AI_ANALYSIS_MODEL", cls.analysis_model).strip()
             or cls.analysis_model,
             timeout_seconds=_env_int("AI_TIMEOUT_SECONDS", cls.timeout_seconds),
+            max_retries=_env_nonnegative_int("AI_MAX_RETRIES", cls.max_retries),
+            max_response_bytes=_env_int(
+                "AI_MAX_RESPONSE_BYTES", cls.max_response_bytes
+            ),
             raw_response_retention_days=_env_int(
                 "AI_RAW_RESPONSE_RETENTION_DAYS", cls.raw_response_retention_days
             ),
@@ -83,6 +100,10 @@ class AIConfig:
             )
         if self.timeout_seconds <= 0:
             raise ValueError("AI_TIMEOUT_SECONDS must be positive")
+        if self.max_retries < 0 or self.max_retries > 5:
+            raise ValueError("AI_MAX_RETRIES must be in 0..5")
+        if self.max_response_bytes <= 0:
+            raise ValueError("AI_MAX_RESPONSE_BYTES must be positive")
         if self.raw_response_retention_days <= 0:
             raise ValueError("AI_RAW_RESPONSE_RETENTION_DAYS must be positive")
         return self
@@ -95,6 +116,8 @@ class AIConfig:
             f"base_url={self.base_url!r}, api_key={'***' if self.api_key else ''!r}, "
             f"vision_model={self.vision_model!r}, analysis_model={self.analysis_model!r}, "
             f"timeout_seconds={self.timeout_seconds!r}, "
+            f"max_retries={self.max_retries!r}, "
+            f"max_response_bytes={self.max_response_bytes!r}, "
             f"raw_response_retention_days={self.raw_response_retention_days!r}, "
             f"auto_link_threshold={self.auto_link_threshold!r}, "
             f"review_threshold={self.review_threshold!r})"

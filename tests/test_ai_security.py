@@ -1,4 +1,6 @@
+from collections import UserDict
 from datetime import timedelta
+import json
 from pathlib import Path
 
 import pytest
@@ -116,6 +118,22 @@ def test_provider_response_key_cannot_echo_api_key_into_database(subject):
 
     assert analysis.status == Question.AI_STATUS_FAILED
     assert secret not in str(analysis.raw_response)
+
+
+def test_secret_redaction_handles_arbitrary_mapping_implementations():
+    from question_bank.ai.service import _redact_secret
+
+    secret = "mapping-secret"
+    payload = UserDict(
+        {
+            f"header-{secret}": UserDict({"authorization": f"Bearer {secret}"}),
+        }
+    )
+
+    redacted = _redact_secret(payload, secret)
+
+    assert isinstance(redacted, dict)
+    assert secret not in json.dumps(redacted, ensure_ascii=False)
 
 
 @pytest.mark.django_db

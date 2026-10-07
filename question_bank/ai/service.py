@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any, Iterable
 
@@ -96,7 +97,7 @@ def _redact_secret(value: Any, secret: str) -> Any:
         return value
     if isinstance(value, str):
         return value.replace(secret, "[REDACTED]")
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {
             _redact_secret(key, secret): _redact_secret(item, secret)
             for key, item in value.items()
@@ -233,11 +234,20 @@ def analyze_question(
     if not config.enabled:
         return analysis
 
-    provider = provider or provider_for_config(config)
     corrected_text = {
         "statement": source_question.recognized_statement or "",
         "solution": source_question.recognized_solution or "",
     }
+    try:
+        provider = provider or provider_for_config(config)
+    except Exception:
+        return _mark_failed(
+            analysis,
+            message="AI Provider 配置无效，请检查服务配置。",
+            provider=PlaceholderProvider(),
+            secret=config.api_key,
+        )
+
     try:
         payload = provider.analyze(
             question_images=list(source_question.attachments.filter(attachment_role="question")),
