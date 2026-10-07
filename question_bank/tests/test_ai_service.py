@@ -1,7 +1,10 @@
-import pytest
 import importlib
+from datetime import timedelta
+
+import pytest
 from django.apps import apps
 from django.db import OperationalError
+from django.utils import timezone
 
 from question_bank.models import (
     KnowledgeCard,
@@ -9,6 +12,7 @@ from question_bank.models import (
     Question,
     QuestionAIAnalysis,
     QuestionAIAnalysisAction,
+    QuestionAttachment,
     Tag,
 )
 
@@ -41,6 +45,17 @@ class SpyProvider:
         }
 
 
+class RaisingProvider:
+    provider_name = "raising"
+    model_name = "raising-model"
+
+    def __init__(self, error):
+        self.error = error
+
+    def analyze(self, **kwargs):
+        raise self.error
+
+
 @pytest.mark.django_db
 def test_ai_disabled_does_not_call_provider(subject):
     from question_bank.ai.config import AIConfig
@@ -53,6 +68,191 @@ def test_ai_disabled_does_not_call_provider(subject):
     assert provider.calls == 0
     assert analysis.status == Question.AI_STATUS_PENDING
     assert analysis.provider == ""
+
+
+def test_raw_response_retention_defaults_to_thirty_days(monkeypatch):
+    from question_bank.ai.config import AIConfig
+
+    monkeypatch.delenv("AI_RAW_RESPONSE_RETENTION_DAYS", raising=False)
+    assert AIConfig.from_env().raw_response_retention_days == 30
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("error", "expected_message"),
+    [
+        (TimeoutError("request timed out with secret-token"), "AI Provider 请求超时，请稍后重试。"),
+        (RuntimeError("relay rejected secret-token"), "AI 分析暂时不可用，请稍后重试。"),
+    ],
+)
+def test_provider_failures_are_retryable_and_sanitized(subject, error, expected_message):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question
+
+    question = Question.objects.create(
+        subject=subject,
+        title="Provider 失败题",
+        recognized_statement="人工校对题干",
+        recognized_solution="人工校对解答",
+    )
+    image = QuestionAttachment.objects.create(
+        question=question,
+        file="questions/provider-failure.png",
+        file_kind="image",
+        attachment_role="question",
+    )
+
+    analysis = analyze_question(
+        question,
+        provider=RaisingProvider(error),
+        config=AIConfig(enabled=True, api_key="secret-token"),
+    )
+
+    question.refresh_from_db()
+    assert analysis.status == Question.AI_STATUS_FAILED
+    assert question.ai_status == Question.AI_STATUS_FAILED
+    assert analysis.error_message == expected_message
+    assert "secret-token" not in analysis.error_message
+    assert question.recognized_statement == "人工校对题干"
+    assert question.recognized_solution == "人工校对解答"
+    assert question.attachments.filter(pk=image.pk).exists()
+
+
+@pytest.mark.django_db
+def test_schema_failure_does_not_write_partial_provider_result(subject):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question
+
+    question = Question.objects.create(
+        subject=subject,
+        title="Schema 失败题",
+        recognized_statement="保留题干",
+        recognized_solution="保留解答",
+    )
+
+    class InvalidSchemaProvider(SpyProvider):
+        def analyze(self, **kwargs):
+            return {
+                "status": "awaiting_review",
+                "recognized_statement": "不得写回的题干",
+                "recognized_solution": "不得写回的解答",
+                "knowledge_points": [],
+                "suggested_tags": [{"name": "坏标签", "category": "invalid", "confidence": 0.8}],
+                "missing_cards": [],
+            }
+
+    analysis = analyze_question(
+        question,
+        provider=InvalidSchemaProvider(),
+        config=AIConfig(enabled=True),
+    )
+
+    question.refresh_from_db()
+    assert analysis.status == Question.AI_STATUS_FAILED
+    assert analysis.error_message == "AI 返回格式无效，请重新分析。"
+    assert analysis.knowledge_points == {}
+    assert analysis.suggested_tags == {}
+    assert analysis.raw_response["recognized_statement"] == "不得写回的题干"
+    assert question.recognized_statement == "保留题干"
+    assert question.recognized_solution == "保留解答"
+
+
+@pytest.mark.django_db
+def test_candidate_retrieval_failure_preserves_question_and_relations(subject, monkeypatch):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question
+
+    question = Question.objects.create(
+        subject=subject,
+        title="候选检索失败题",
+        recognized_statement="保留题干",
+    )
+    card = KnowledgeCard.objects.create(subject=subject, name="人工卡片", type="theorem")
+    question.knowledge_cards.add(card)
+    monkeypatch.setattr(
+        "question_bank.ai.service._keyword_candidates",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("database secret-token")),
+    )
+
+    analysis = analyze_question(
+        question,
+        provider=SpyProvider(),
+        config=AIConfig(enabled=True, api_key="secret-token"),
+    )
+
+    question.refresh_from_db()
+    assert analysis.status == Question.AI_STATUS_FAILED
+    assert analysis.error_message == "候选知识卡片检索失败，请稍后重试。"
+    assert list(question.knowledge_cards.all()) == [card]
+    assert question.recognized_statement == "保留题干"
+
+
+@pytest.mark.django_db
+def test_failed_analysis_can_retry_same_input_as_new_version(subject):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question
+
+    question = Question.objects.create(subject=subject, title="失败重试", recognized_statement="相同输入")
+    config = AIConfig(enabled=True)
+    failed = analyze_question(
+        question,
+        provider=RaisingProvider(TimeoutError("timeout")),
+        config=config,
+    )
+    retried = analyze_question(question, provider=SpyProvider(), config=config)
+
+    question.refresh_from_db()
+    assert failed.status == Question.AI_STATUS_FAILED
+    assert retried.pk != failed.pk
+    assert retried.version == failed.version + 1
+    assert retried.status == Question.AI_STATUS_AWAITING_REVIEW
+    assert question.ai_status == Question.AI_STATUS_AWAITING_REVIEW
+
+
+@pytest.mark.django_db
+def test_raw_response_cleanup_defaults_to_thirty_days_and_keeps_summary(subject):
+    from question_bank.ai.service import purge_expired_raw_responses
+
+    question = Question.objects.create(subject=subject, title="原始响应清理")
+    old = QuestionAIAnalysis.objects.create(
+        question=question,
+        version=1,
+        input_fingerprint="1" * 64,
+        status=Question.AI_STATUS_AWAITING_REVIEW,
+        knowledge_points={"items": [{"name": "保留摘要"}]},
+        raw_response={"private": "expired"},
+    )
+    fresh = QuestionAIAnalysis.objects.create(
+        question=question,
+        version=2,
+        input_fingerprint="2" * 64,
+        status=Question.AI_STATUS_AWAITING_REVIEW,
+        raw_response={"private": "fresh"},
+    )
+    QuestionAIAnalysis.objects.filter(pk=old.pk).update(
+        created_at=timezone.now() - timedelta(days=60),
+        completed_at=timezone.now() - timedelta(days=31),
+    )
+    QuestionAIAnalysis.objects.filter(pk=fresh.pk).update(
+        created_at=timezone.now() - timedelta(days=60),
+        completed_at=timezone.now() - timedelta(days=29),
+    )
+    QuestionAIAnalysisAction.objects.create(
+        analysis=old,
+        candidate_type="knowledge_point",
+        candidate_key="kept",
+        action_type="ignore",
+    )
+
+    removed = purge_expired_raw_responses()
+
+    old.refresh_from_db()
+    fresh.refresh_from_db()
+    assert removed == 1
+    assert old.raw_response == {}
+    assert old.knowledge_points == {"items": [{"name": "保留摘要"}]}
+    assert old.actions.filter(candidate_key="kept", action_type="ignore").exists()
+    assert fresh.raw_response == {"private": "fresh"}
 
 
 @pytest.mark.django_db
@@ -145,6 +345,43 @@ def test_old_provider_result_does_not_write_back_after_input_changes(subject):
     assert original.status == Question.AI_STATUS_PENDING
     assert original.knowledge_points == {}
     assert "未写回" in original.error_message
+
+
+@pytest.mark.django_db
+def test_stale_caller_instance_uses_locked_current_input(subject):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question
+
+    stale_question = Question.objects.create(
+        subject=subject,
+        title="锁前旧对象",
+        recognized_statement="旧题干",
+        recognized_solution="旧解答",
+        personal_signals="旧信号",
+    )
+    Question.objects.filter(pk=stale_question.pk).update(
+        recognized_statement="新题干",
+        recognized_solution="新解答",
+        personal_signals="新信号",
+    )
+    captured = {}
+
+    class CapturingProvider(SpyProvider):
+        def analyze(self, **kwargs):
+            captured.update(kwargs)
+            return super().analyze(**kwargs)
+
+    analysis = analyze_question(
+        stale_question,
+        provider=CapturingProvider(),
+        config=AIConfig(enabled=True),
+    )
+
+    stale_question.refresh_from_db()
+    assert captured["corrected_text"] == {"statement": "新题干", "solution": "新解答"}
+    assert captured["personal_notes"] == "新信号"
+    assert analysis.recognized_statement == "新题干"
+    assert stale_question.recognized_statement == "新题干"
 
 
 @pytest.mark.django_db

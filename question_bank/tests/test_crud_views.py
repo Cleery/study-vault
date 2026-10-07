@@ -138,6 +138,49 @@ def test_start_analysis_is_post_only_and_does_not_run_during_question_save(clien
 
 
 @pytest.mark.django_db
+def test_duplicate_analysis_submission_creates_one_version(client, subject, monkeypatch):
+    monkeypatch.setenv("AI_ENABLED", "false")
+    question = Question.objects.create(subject=subject, title="重复提交")
+    payload = {"analysis_version": "0", "input_fingerprint": ""}
+
+    first = client.post(reverse("question-analysis-start", args=[question.pk]), payload)
+    duplicate = client.post(reverse("question-analysis-start", args=[question.pk]), payload)
+
+    assert first.status_code == 302
+    assert duplicate.status_code == 409
+    assert QuestionAIAnalysis.objects.filter(question=question).count() == 1
+
+
+@pytest.mark.django_db
+def test_ai_disabled_does_not_affect_normal_question_and_image_save(
+    client, subject, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("AI_ENABLED", "false")
+    monkeypatch.setattr(
+        "question_bank.views.analyze_question",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ordinary save called AI")),
+    )
+
+    with override_settings(MEDIA_ROOT=tmp_path):
+        response = client.post(
+            reverse("question-create"),
+            {
+                "subject": str(subject.pk),
+                "title": "AI 关闭仍保存",
+                "statement": "普通题干",
+                "save_intent": "publish",
+                "attachments": image_file("kept.png", (10, 20, 30)),
+            },
+        )
+
+    assert response.status_code == 302
+    question = Question.objects.get(title="AI 关闭仍保存")
+    assert question.statement == "普通题干"
+    assert question.attachments.filter(attachment_role="question").count() == 1
+    assert question.ai_analyses.count() == 0
+
+
+@pytest.mark.django_db
 def test_corrected_analysis_text_creates_new_version(client, subject, monkeypatch):
     monkeypatch.setenv("AI_ENABLED", "false")
     question = Question.objects.create(subject=subject, title="校对题", recognized_statement="旧题干")

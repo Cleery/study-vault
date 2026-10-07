@@ -51,6 +51,17 @@ def test_question_analysis_template_has_versioned_post_contract():
     assert "确认关联" in template
 
 
+def test_question_analysis_template_uses_sanitized_analysis_summary():
+    template = Path("question_bank/templates/question_bank/question_analysis.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "analysis_summary" in template
+    assert "latest_analysis" not in template
+    assert "raw_response" not in template
+    assert "api_key" not in template.casefold()
+
+
 @pytest.mark.django_db
 def test_question_list_exposes_study_desk_navigation_search_and_mathjax(client, subject):
     response = client.get(reverse("question-list"), {"q": "极限", "subject": subject.pk})

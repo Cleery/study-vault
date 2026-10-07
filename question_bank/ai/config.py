@@ -50,6 +50,7 @@ class AIConfig:
     vision_model: str = "placeholder-vision-model"
     analysis_model: str = "placeholder-analysis-model"
     timeout_seconds: int = 60
+    raw_response_retention_days: int = 30
     auto_link_threshold: float = 0.9
     review_threshold: float = 0.7
 
@@ -65,6 +66,9 @@ class AIConfig:
             analysis_model=os.getenv("AI_ANALYSIS_MODEL", cls.analysis_model).strip()
             or cls.analysis_model,
             timeout_seconds=_env_int("AI_TIMEOUT_SECONDS", cls.timeout_seconds),
+            raw_response_retention_days=_env_int(
+                "AI_RAW_RESPONSE_RETENTION_DAYS", cls.raw_response_retention_days
+            ),
             auto_link_threshold=_env_float(
                 "AI_AUTO_LINK_THRESHOLD", cls.auto_link_threshold
             ),
@@ -79,6 +83,8 @@ class AIConfig:
             )
         if self.timeout_seconds <= 0:
             raise ValueError("AI_TIMEOUT_SECONDS must be positive")
+        if self.raw_response_retention_days <= 0:
+            raise ValueError("AI_RAW_RESPONSE_RETENTION_DAYS must be positive")
         return self
 
     def __repr__(self) -> str:
@@ -89,6 +95,7 @@ class AIConfig:
             f"base_url={self.base_url!r}, api_key={'***' if self.api_key else ''!r}, "
             f"vision_model={self.vision_model!r}, analysis_model={self.analysis_model!r}, "
             f"timeout_seconds={self.timeout_seconds!r}, "
+            f"raw_response_retention_days={self.raw_response_retention_days!r}, "
             f"auto_link_threshold={self.auto_link_threshold!r}, "
             f"review_threshold={self.review_threshold!r})"
         )

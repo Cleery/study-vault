@@ -61,6 +61,8 @@ sudo -u mathvault bash -lc 'set -a; source /etc/math-question-bank.env; set +a; 
 
 `DEBUG` 和 `DEV_AUTH_BYPASS` 必须为 `false`。`SECRET_KEY` 至少包含 50 个字符且不能使用 Django 的不安全前缀。生产预检还要求 `BACKUP_AGE_PUBLIC_KEY` 与 `BACKUP_OFFLINE_PATH` 存在。
 
+AI 默认关闭。启用前需要确认 Provider 对上传图片、识别文本和模型响应的数据保留政策与训练政策，并在 `/etc/math-question-bank.env` 中设置 `AI_ENABLED=true`、Provider 地址、模型名和 `AI_API_KEY`。密钥文件权限保持 `0640`，不得把密钥写入代码、模板、JavaScript 或普通日志。`AI_RAW_RESPONSE_RETENTION_DAYS` 默认值为 `30`，分析摘要和人工审核记录不受该期限影响。
+
 ## 4. 初始化数据和静态文件
 
 ```bash
@@ -145,6 +147,14 @@ sudo BACKUP_AGE_IDENTITY_FILE=/root/math-question-bank-age-key.txt \
 脚本会验证文件校验和与 SQLite `PRAGMA integrity_check`。演练后还应在隔离环境中指向恢复数据库与媒体目录，启动单独实例检查题目和图片关系。
 
 ## 9. 更新与排错
+
+使用 systemd timer 或 cron 每日执行原始响应清理，默认删除超过 30 天的 Provider 原始响应：
+
+```bash
+sudo -u mathvault bash -lc 'set -a; source /etc/math-question-bank.env; set +a; cd /srv/math-question-bank/current; /srv/math-question-bank/venv/bin/python manage.py cleanup_ai_raw_responses'
+```
+
+可使用 `--days` 临时指定更短或更长的保留天数。修改期限前应重新核对 Provider 的数据保留政策和训练政策。
 
 每次更新执行迁移、静态文件收集和服务重启：
 

@@ -494,9 +494,18 @@ def question_detail(request, pk):
         Question.objects.prefetch_related("attachments", "knowledge_cards"), pk=pk
     )
     attachments = list(question.attachments.all())
+    latest = question.latest_ai_analysis
     context = {
         "question": question,
-        "latest_analysis": question.latest_ai_analysis,
+        "analysis_summary": (
+            {
+                "version": latest.version,
+                "status": latest.status,
+                "error_message": latest.error_message,
+            }
+            if latest is not None
+            else None
+        ),
         "question_images": [item for item in attachments if item.attachment_role == "question"],
         "solution_images": [item for item in attachments if item.attachment_role == "solution"],
     }
@@ -590,9 +599,16 @@ def _analysis_context(question, *, form=None, conflict_message=""):
             initial={"analysis_version": version, "input_fingerprint": fingerprint},
         )
     attachments = list(question.attachments.all())
+    analysis_summary = None
+    if latest is not None:
+        analysis_summary = {
+            "version": latest.version,
+            "status": latest.status,
+            "error_message": latest.error_message,
+        }
     return {
         "question": question,
-        "latest_analysis": latest,
+        "analysis_summary": analysis_summary,
         "correction_form": form,
         "question_images": [item for item in attachments if item.attachment_role == "question"],
         "solution_images": [item for item in attachments if item.attachment_role == "solution"],

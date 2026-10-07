@@ -5,15 +5,15 @@
 {% block content %}
 <article class="analysis-workbench" data-question-analysis>
   <header class="analysis-heading">
-    <div><a href="{% url 'question-detail' question.pk %}">返回题目</a><h1>AI 题目分析</h1><p>{{ question.title|default:"未命名题目" }} · {{ question.get_ai_status_display }}{% if latest_analysis %} · 版本 {{ latest_analysis.version }}{% endif %}</p></div>
+    <div><a href="{% url 'question-detail' question.pk %}">返回题目</a><h1>AI 题目分析</h1><p>{{ question.title|default:"未命名题目" }} · {{ question.get_ai_status_display }}{% if analysis_summary %} · 版本 {{ analysis_summary.version }}{% endif %}</p></div>
     <form method="post" action="{% url 'question-analysis-start' question.pk %}">
       {% csrf_token %}<input type="hidden" name="analysis_version" value="{{ current_version }}"><input type="hidden" name="input_fingerprint" value="{{ current_fingerprint }}">
-      <button type="submit">{% if latest_analysis %}重新分析{% else %}开始分析{% endif %}</button>
+      <button type="submit">{% if analysis_summary %}重新分析{% else %}开始分析{% endif %}</button>
     </form>
   </header>
   {% if conflict_message %}<div class="analysis-notice analysis-notice--error" role="alert">{{ conflict_message }}</div>{% endif %}
   {% if not ai_enabled %}<div class="analysis-notice"><strong>等待配置</strong><p>AI 当前关闭。题目和校对内容会正常保存，配置模型后可以开始分析。</p></div>{% endif %}
-  {% if latest_analysis.status == "failed" %}<div class="analysis-notice analysis-notice--error"><strong>分析失败</strong><p>{{ latest_analysis.error_message }}</p><p>可以使用上方“重新分析”再次尝试。</p></div>{% endif %}
+  {% if analysis_summary.status == "failed" %}<div class="analysis-notice analysis-notice--error"><strong>分析失败</strong><p>{{ analysis_summary.error_message }}</p><p>可以使用上方“重新分析”再次尝试。</p></div>{% endif %}
 
   <div class="analysis-grid">
     <section class="analysis-panel"><h2>原始图片</h2><h3>题目图片</h3><div class="analysis-images">{% for attachment in question_images %}<img src="{{ attachment.file.url }}" alt="题目图片 {{ forloop.counter }}">{% empty %}<p>暂无题目图片。</p>{% endfor %}</div><h3>解答图片</h3><div class="analysis-images">{% for attachment in solution_images %}<img src="{{ attachment.file.url }}" alt="解答图片 {{ forloop.counter }}">{% empty %}<p>暂无解答图片。</p>{% endfor %}</div></section>
