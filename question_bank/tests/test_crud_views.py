@@ -250,7 +250,7 @@ def test_analysis_page_exposes_working_review_forms(client, subject):
 
 @pytest.mark.django_db
 def test_analysis_page_only_enables_valid_next_review_action(client, subject):
-    from question_bank.models import QuestionAIAnalysisAction
+    from question_bank.ai.actions import review_candidate
 
     question = Question.objects.create(subject=subject, title="审核状态按钮")
     card = KnowledgeCard.objects.create(subject=subject, name="介值定理", type="theorem")
@@ -261,18 +261,67 @@ def test_analysis_page_only_enables_valid_next_review_action(client, subject):
         status=Question.AI_STATUS_AWAITING_REVIEW,
         knowledge_points={"items": [{"name": card.name, "matched_card_id": str(card.pk), "confidence": 0.9}]},
     )
-    QuestionAIAnalysisAction.objects.create(
-        analysis=analysis,
-        action_type="confirm",
-        candidate_type="knowledge_point",
-        candidate_key=str(card.pk),
-        payload={},
-    )
+    review_candidate(analysis, "knowledge_point", str(card.pk), "confirm")
 
     body = client.get(reverse("question-analysis", args=[question.pk])).content.decode()
 
     assert 'name="action" value="confirm" disabled' in body
     assert 'name="action" value="revoke">撤销关联' in body
+
+
+@pytest.mark.django_db
+def test_analysis_page_allows_confirm_after_external_remove_and_restores_link(client, subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="外部删除后恢复")
+    card = KnowledgeCard.objects.create(subject=subject, name="拉格朗日中值定理", type="theorem")
+    analysis = QuestionAIAnalysis.objects.create(
+        question=question,
+        version=1,
+        input_fingerprint="5" * 64,
+        status=Question.AI_STATUS_AWAITING_REVIEW,
+        knowledge_points={"items": [{"name": card.name, "matched_card_id": str(card.pk), "confidence": 0.9}]},
+    )
+    review_candidate(analysis, "knowledge_point", str(card.pk), "confirm")
+    question.knowledge_cards.remove(card)
+
+    body = client.get(reverse("question-analysis", args=[question.pk])).content.decode()
+    assert 'name="action" value="confirm">确认关联' in body
+    assert 'name="action" value="revoke" disabled' in body
+
+    response = client.post(
+        reverse("question-analysis-review", args=[question.pk]),
+        {
+            "analysis_version": analysis.version,
+            "input_fingerprint": analysis.input_fingerprint,
+            "candidate_type": "knowledge_point",
+            "candidate_key": str(card.pk),
+            "action": "confirm",
+        },
+    )
+    assert response.status_code == 302
+    assert question.knowledge_cards.filter(pk=card.pk).exists()
+
+
+@pytest.mark.django_db
+def test_analysis_page_allows_confirm_after_revoke(client, subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="撤销后恢复")
+    card = KnowledgeCard.objects.create(subject=subject, name="罗尔定理恢复", type="theorem")
+    analysis = QuestionAIAnalysis.objects.create(
+        question=question,
+        version=1,
+        input_fingerprint="6" * 64,
+        status=Question.AI_STATUS_AWAITING_REVIEW,
+        knowledge_points={"items": [{"name": card.name, "matched_card_id": str(card.pk), "confidence": 0.9}]},
+    )
+    review_candidate(analysis, "knowledge_point", str(card.pk), "confirm")
+    review_candidate(analysis, "knowledge_point", str(card.pk), "revoke")
+
+    body = client.get(reverse("question-analysis", args=[question.pk])).content.decode()
+    assert 'name="action" value="confirm">确认关联' in body
+    assert 'name="action" value="revoke" disabled' in body
 
 
 @pytest.mark.django_db

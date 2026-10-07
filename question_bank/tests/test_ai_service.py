@@ -567,18 +567,25 @@ def test_revoke_keeps_relation_manually_rebuilt_after_external_remove(subject, c
 
 @pytest.mark.django_db
 def test_ownership_migration_resolves_legacy_tag_and_uses_latest_confirm(subject):
+    from question_bank.ai.actions import review_candidate
     from question_bank.models import AIReviewOwnership
 
     question = Question.objects.create(subject=subject, title="旧审核迁移")
     tag = Tag.objects.create(name="旧标签", kind="method")
     question.tags.add(tag)
     first = QuestionAIAnalysis.objects.create(
-        question=question, version=1, input_fingerprint="a" * 64
+        question=question,
+        version=1,
+        input_fingerprint="a" * 64,
+        status=Question.AI_STATUS_AWAITING_REVIEW,
+        suggested_tags={
+            "items": [{"name": "旧标签", "category": "method"}],
+        },
     )
     second = QuestionAIAnalysis.objects.create(
         question=question, version=2, input_fingerprint="b" * 64
     )
-    QuestionAIAnalysisAction.objects.create(
+    owned_action = QuestionAIAnalysisAction.objects.create(
         analysis=first,
         action_type="confirm",
         candidate_type="tag",
@@ -588,14 +595,14 @@ def test_ownership_migration_resolves_legacy_tag_and_uses_latest_confirm(subject
             "relation_owned": True,
         },
     )
-    latest = QuestionAIAnalysisAction.objects.create(
+    unowned_action = QuestionAIAnalysisAction.objects.create(
         analysis=second,
         action_type="confirm",
         candidate_type="tag",
         candidate_key="method:旧标签",
         payload={
             "candidate": {"name": "旧标签", "category": "method"},
-            "relation_owned": True,
+            "relation_owned": False,
         },
     )
 
@@ -607,9 +614,14 @@ def test_ownership_migration_resolves_legacy_tag_and_uses_latest_confirm(subject
     ownership = AIReviewOwnership.objects.get(
         question=question, target_type="tag", target_id=tag.pk
     )
-    latest.refresh_from_db()
-    assert ownership.owning_analysis == second
-    assert latest.payload["tag_id"] == str(tag.pk)
+    owned_action.refresh_from_db()
+    unowned_action.refresh_from_db()
+    assert ownership.owning_analysis == first
+    assert owned_action.payload["tag_id"] == str(tag.pk)
+    assert unowned_action.payload["tag_id"] == str(tag.pk)
+
+    review_candidate(first, "tag", "method:旧标签", "revoke")
+    assert not question.tags.filter(pk=tag.pk).exists()
 
 
 @pytest.mark.django_db

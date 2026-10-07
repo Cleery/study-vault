@@ -54,14 +54,21 @@ def backfill_review_ownerships(apps, schema_editor):
             action.payload = payload
             action.save(update_fields=['payload'])
             continue
-        latest_by_target[(action.analysis.question_id, target_type, target_id)] = (
-            action,
-            payload.get('relation_owned', payload.get('relation_added')) is True,
-        )
-
-    for (question_id, target_type, target_id), (action, relation_owned) in latest_by_target.items():
+        relation_owned = payload.get('relation_owned', payload.get('relation_added')) is True
         if not relation_owned:
             continue
+        later_revoke_exists = Action.objects.filter(
+            analysis_id=action.analysis_id,
+            candidate_type=action.candidate_type,
+            candidate_key=action.candidate_key,
+            action_type='revoke',
+            updated_at__gt=action.updated_at,
+        ).exists()
+        if later_revoke_exists:
+            continue
+        latest_by_target[(action.analysis.question_id, target_type, target_id)] = action
+
+    for (question_id, target_type, target_id), action in latest_by_target.items():
         relation_exists = (
             card_through.objects.filter(
                 question_id=question_id, knowledgecard_id=target_id

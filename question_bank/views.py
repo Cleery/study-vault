@@ -15,7 +15,7 @@ from .attachments import (
 )
 from .forms import KnowledgeCardForm, QuestionAnalysisCorrectionForm, QuestionForm, QuestionMetadataForm, TagForm, build_core_content
 from .markdown import render_markdown
-from .models import KnowledgeCard, Question, QuestionAttachment, Section, Subject, Tag
+from .models import AIReviewOwnership, KnowledgeCard, MissingKnowledgeCardSuggestion, Question, QuestionAttachment, Section, Subject, Tag
 from .ai.config import AIConfig
 from .ai.actions import InvalidCandidate, StaleAnalysis, review_candidate
 from .ai.service import analyze_question
@@ -536,6 +536,46 @@ def _review_items(analysis, field, candidate_type):
                 candidate_key=item["candidate_key"],
             ).order_by("-updated_at", "-id").first()
             item["review_action"] = action.action_type if action else ""
+            item["can_confirm"] = True
+            item["can_ignore"] = action is None
+            item["can_revoke"] = False
+            if action and action.action_type == "confirm":
+                relation_active = False
+                if candidate_type == "knowledge_point":
+                    target_id = item["candidate_key"]
+                    relation_active = (
+                        analysis.question.knowledge_cards.filter(pk=target_id).exists()
+                        and AIReviewOwnership.objects.filter(
+                            question=analysis.question,
+                            owning_analysis=analysis,
+                            target_type="knowledge_point",
+                            target_id=target_id,
+                            active=True,
+                        ).exists()
+                    )
+                elif candidate_type == "tag":
+                    payload = action.payload if isinstance(action.payload, dict) else {}
+                    target_id = payload.get("tag_id")
+                    relation_active = bool(target_id) and (
+                        analysis.question.tags.filter(pk=target_id).exists()
+                        and AIReviewOwnership.objects.filter(
+                            question=analysis.question,
+                            owning_analysis=analysis,
+                            target_type="tag",
+                            target_id=target_id,
+                            active=True,
+                        ).exists()
+                    )
+                else:
+                    relation_active = MissingKnowledgeCardSuggestion.objects.filter(
+                        analysis=analysis,
+                        candidate_key=item["candidate_key"],
+                        status=MissingKnowledgeCardSuggestion.STATUS_PENDING,
+                    ).exists()
+                item["can_confirm"] = not relation_active
+                item["can_revoke"] = relation_active
+            elif action and action.action_type in {"ignore", "revoke"}:
+                item["can_confirm"] = True
         items.append(item)
     return items
 
