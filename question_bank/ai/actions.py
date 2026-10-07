@@ -73,14 +73,39 @@ def _find_candidate(analysis: QuestionAIAnalysis, candidate_type: str, candidate
 
 def _record_action(analysis, action, candidate_type, candidate_key, item, **metadata):
     payload = {"candidate": item, **metadata}
-    record, _ = QuestionAIAnalysisAction.objects.get_or_create(
+    record, created = QuestionAIAnalysisAction.objects.get_or_create(
         analysis=analysis,
         action_type=action,
         candidate_type=candidate_type,
         candidate_key=candidate_key,
         defaults={"payload": payload},
     )
+    if not created and metadata:
+        record.payload = payload
+        record.save(update_fields=["payload", "updated_at"])
     return record
+
+
+def _confirmed_relation_is_owned(analysis, candidate_type, candidate_key):
+    confirmed = analysis.actions.filter(
+        action_type="confirm",
+        candidate_type=candidate_type,
+        candidate_key=candidate_key,
+    ).first()
+    if confirmed is None:
+        return False, None
+    payload = confirmed.payload if isinstance(confirmed.payload, dict) else {}
+    return payload.get("relation_owned", payload.get("relation_added")) is True, confirmed
+
+
+def _release_relation_ownership(confirmed):
+    if confirmed is None:
+        return
+    payload = dict(confirmed.payload) if isinstance(confirmed.payload, dict) else {}
+    payload["relation_owned"] = False
+    payload["relation_added"] = False
+    confirmed.payload = payload
+    confirmed.save(update_fields=["payload", "updated_at"])
 
 
 def _review_knowledge(question, analysis, candidate_key, action, item):
@@ -89,7 +114,11 @@ def _review_knowledge(question, analysis, candidate_key, action, item):
     except (KnowledgeCard.DoesNotExist, ValueError) as exc:
         raise InvalidCandidate("候选知识卡片无效。") from exc
     if action == "confirm":
-        relation_added = not question.knowledge_cards.filter(pk=card.pk).exists()
+        relation_exists = question.knowledge_cards.filter(pk=card.pk).exists()
+        already_owned, _ = _confirmed_relation_is_owned(
+            analysis, "knowledge_point", candidate_key
+        )
+        relation_owned = already_owned or not relation_exists
         question.knowledge_cards.add(card)
         return _record_action(
             analysis,
@@ -97,16 +126,16 @@ def _review_knowledge(question, analysis, candidate_key, action, item):
             "knowledge_point",
             candidate_key,
             item,
-            relation_added=relation_added,
+            relation_added=relation_owned,
+            relation_owned=relation_owned,
         )
     elif action == "revoke":
-        confirmed = analysis.actions.filter(
-            action_type="confirm",
-            candidate_type="knowledge_point",
-            candidate_key=candidate_key,
-        ).first()
-        if confirmed and confirmed.payload.get("relation_added") is True:
+        relation_owned, confirmed = _confirmed_relation_is_owned(
+            analysis, "knowledge_point", candidate_key
+        )
+        if relation_owned:
             question.knowledge_cards.remove(card)
+            _release_relation_ownership(confirmed)
     return _record_action(analysis, action, "knowledge_point", candidate_key, item)
 
 
@@ -128,7 +157,9 @@ def _review_tag(question, analysis, candidate_key, action, item):
             tag = Tag.objects.create(name=name, kind=kind)
         elif tag.archived or tag.redirect_to_id:
             raise InvalidCandidate("同名标签已归档或已合并。")
-        relation_added = not question.tags.filter(pk=tag.pk).exists()
+        relation_exists = question.tags.filter(pk=tag.pk).exists()
+        already_owned, _ = _confirmed_relation_is_owned(analysis, "tag", candidate_key)
+        relation_owned = already_owned or not relation_exists
         question.tags.add(tag)
         return _record_action(
             analysis,
@@ -136,16 +167,16 @@ def _review_tag(question, analysis, candidate_key, action, item):
             "tag",
             candidate_key,
             item,
-            relation_added=relation_added,
+            relation_added=relation_owned,
+            relation_owned=relation_owned,
         )
     elif action == "revoke" and tag is not None:
-        confirmed = analysis.actions.filter(
-            action_type="confirm",
-            candidate_type="tag",
-            candidate_key=candidate_key,
-        ).first()
-        if confirmed and confirmed.payload.get("relation_added") is True:
+        relation_owned, confirmed = _confirmed_relation_is_owned(
+            analysis, "tag", candidate_key
+        )
+        if relation_owned:
             question.tags.remove(tag.resolve_redirect())
+            _release_relation_ownership(confirmed)
     return _record_action(analysis, action, "tag", candidate_key, item)
 
 

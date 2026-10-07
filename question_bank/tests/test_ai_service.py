@@ -260,6 +260,52 @@ def test_revoking_candidate_keeps_preexisting_manual_knowledge_link(subject):
 
 
 @pytest.mark.django_db
+def test_second_revoke_keeps_knowledge_link_manually_restored_after_revoke(subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="撤销后人工重连")
+    card = KnowledgeCard.objects.create(subject=subject, name="泰勒定理", type="theorem")
+    analysis = _review_analysis(
+        question,
+        knowledge=[{"name": card.name, "matched_card_id": str(card.pk), "confidence": 0.94}],
+    )
+
+    review_candidate(analysis, "knowledge_point", str(card.pk), "confirm")
+    review_candidate(analysis, "knowledge_point", str(card.pk), "revoke")
+    confirm = analysis.actions.get(
+        action_type="confirm", candidate_type="knowledge_point", candidate_key=str(card.pk)
+    )
+    assert confirm.payload["relation_owned"] is False
+    question.knowledge_cards.add(card)
+    review_candidate(analysis, "knowledge_point", str(card.pk), "revoke")
+
+    assert question.knowledge_cards.filter(pk=card.pk).exists()
+
+
+@pytest.mark.django_db
+def test_later_confirm_can_own_knowledge_link_after_manual_link_was_removed(subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="人工解除后重新确认")
+    card = KnowledgeCard.objects.create(subject=subject, name="积分中值定理", type="theorem")
+    question.knowledge_cards.add(card)
+    analysis = _review_analysis(
+        question,
+        knowledge=[{"name": card.name, "matched_card_id": str(card.pk), "confidence": 0.91}],
+    )
+
+    first = review_candidate(analysis, "knowledge_point", str(card.pk), "confirm")
+    assert first.payload["relation_added"] is False
+    question.knowledge_cards.remove(card)
+    second = review_candidate(analysis, "knowledge_point", str(card.pk), "confirm")
+    second.refresh_from_db()
+    assert second.payload["relation_added"] is True
+    review_candidate(analysis, "knowledge_point", str(card.pk), "revoke")
+
+    assert not question.knowledge_cards.filter(pk=card.pk).exists()
+
+
+@pytest.mark.django_db
 def test_tag_suggestion_only_becomes_formal_after_confirmation(subject):
     from question_bank.ai.actions import review_candidate
 
@@ -276,6 +322,52 @@ def test_tag_suggestion_only_becomes_formal_after_confirmation(subject):
     tag = Tag.objects.get(name="放缩")
     assert tag.kind == "method"
     assert list(question.tags.all()) == [tag]
+
+
+@pytest.mark.django_db
+def test_second_revoke_keeps_tag_manually_restored_after_revoke(subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="标签撤销后人工重连")
+    analysis = _review_analysis(
+        question,
+        tags=[{"name": "放缩", "category": "method", "confidence": 0.9}],
+    )
+
+    review_candidate(analysis, "tag", "method:放缩", "confirm")
+    tag = Tag.objects.get(name="放缩", kind="method")
+    review_candidate(analysis, "tag", "method:放缩", "revoke")
+    confirm = analysis.actions.get(
+        action_type="confirm", candidate_type="tag", candidate_key="method:放缩"
+    )
+    assert confirm.payload["relation_owned"] is False
+    question.tags.add(tag)
+    review_candidate(analysis, "tag", "method:放缩", "revoke")
+
+    assert question.tags.filter(pk=tag.pk).exists()
+
+
+@pytest.mark.django_db
+def test_later_confirm_can_own_tag_after_manual_link_was_removed(subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="标签人工解除后重确认")
+    tag = Tag.objects.create(name="构造函数", kind="method")
+    question.tags.add(tag)
+    analysis = _review_analysis(
+        question,
+        tags=[{"name": tag.name, "category": "method", "confidence": 0.9}],
+    )
+
+    first = review_candidate(analysis, "tag", "method:构造函数", "confirm")
+    assert first.payload["relation_added"] is False
+    question.tags.remove(tag)
+    second = review_candidate(analysis, "tag", "method:构造函数", "confirm")
+    second.refresh_from_db()
+    assert second.payload["relation_added"] is True
+    review_candidate(analysis, "tag", "method:构造函数", "revoke")
+
+    assert not question.tags.filter(pk=tag.pk).exists()
 
 
 @pytest.mark.django_db
