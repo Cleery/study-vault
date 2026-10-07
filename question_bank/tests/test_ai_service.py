@@ -1,4 +1,5 @@
 import pytest
+from django.db import OperationalError
 
 from question_bank.models import (
     KnowledgeCard,
@@ -491,6 +492,42 @@ def test_confirm_restores_owned_relation_removed_outside_review(subject, candida
 
     assert manager.filter(pk=target.pk).exists()
     assert second.action_type == "confirm"
+
+
+@pytest.mark.django_db
+def test_locked_concurrent_tag_creation_returns_retryable_domain_error(subject, monkeypatch):
+    from question_bank.ai.actions import InvalidCandidate, review_candidate
+
+    question = Question.objects.create(subject=subject, title="并发标签锁")
+    analysis = _review_analysis(
+        question,
+        tags=[{"name": "并发标签", "category": "method", "confidence": 0.9}],
+    )
+
+    def locked_create(**kwargs):
+        raise OperationalError("database is locked")
+
+    monkeypatch.setattr(Tag.objects, "create", locked_create)
+    with pytest.raises(InvalidCandidate, match="请重试"):
+        review_candidate(analysis, "tag", "method:并发标签", "confirm")
+
+
+@pytest.mark.django_db
+def test_missing_card_can_be_confirmed_again_after_revoke(subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="待建立卡片恢复")
+    analysis = _review_analysis(
+        question,
+        missing=[{"name": "恢复卡片", "card_type": "other", "confidence": 0.8}],
+    )
+    key = "other:恢复卡片"
+    review_candidate(analysis, "missing_card", key, "confirm")
+    review_candidate(analysis, "missing_card", key, "revoke")
+    review_candidate(analysis, "missing_card", key, "confirm")
+
+    suggestion = analysis.missing_card_suggestions.get(candidate_key=key)
+    assert suggestion.status == suggestion.STATUS_PENDING
 
 
 @pytest.mark.django_db

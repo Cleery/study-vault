@@ -198,7 +198,7 @@ def _review_tag(question, analysis, candidate_key, action, item):
             try:
                 with transaction.atomic():
                     tag = Tag.objects.create(name=name, kind=kind)
-            except IntegrityError:
+            except (IntegrityError, OperationalError):
                 tag = Tag.objects.filter(
                     name__iexact=name, kind=kind, parent__isnull=True
                 ).first()
@@ -262,7 +262,7 @@ def _review_missing(analysis, candidate_key, action, item):
         allowed_types = {value for value, _ in KnowledgeCard.CARD_TYPE_CHOICES}
         if card_type not in allowed_types:
             raise InvalidCandidate("待建立知识卡片类型无效。")
-        MissingKnowledgeCardSuggestion.objects.get_or_create(
+        suggestion, created = MissingKnowledgeCardSuggestion.objects.select_for_update().get_or_create(
             analysis=analysis,
             candidate_key=candidate_key,
             defaults={
@@ -271,6 +271,9 @@ def _review_missing(analysis, candidate_key, action, item):
                 "reason": str(item.get("reason") or ""),
             },
         )
+        if not created and suggestion.status == MissingKnowledgeCardSuggestion.STATUS_DISMISSED:
+            suggestion.status = MissingKnowledgeCardSuggestion.STATUS_PENDING
+            suggestion.save(update_fields=["status", "updated_at"])
     elif action == "revoke":
         MissingKnowledgeCardSuggestion.objects.select_for_update().filter(
             analysis=analysis,

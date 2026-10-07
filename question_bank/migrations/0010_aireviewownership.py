@@ -2,6 +2,41 @@
 
 import django.db.models.deletion
 from django.db import migrations, models
+import uuid
+
+
+def backfill_review_ownerships(apps, schema_editor):
+    Action = apps.get_model('question_bank', 'QuestionAIAnalysisAction')
+    Ownership = apps.get_model('question_bank', 'AIReviewOwnership')
+    for action in Action.objects.filter(action_type='confirm').select_related('analysis'):
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        if payload.get('relation_owned', payload.get('relation_added')) is not True:
+            continue
+        if action.candidate_type == 'knowledge_point':
+            target_type = 'knowledge_point'
+            target_value = payload.get('knowledge_card_id') or action.candidate_key
+        elif action.candidate_type == 'tag':
+            target_type = 'tag'
+            target_value = payload.get('tag_id')
+        else:
+            continue
+        try:
+            target_id = uuid.UUID(str(target_value))
+        except (TypeError, ValueError, AttributeError):
+            payload['ownership_backfill_error'] = 'target_id_unavailable'
+            action.payload = payload
+            action.save(update_fields=['payload'])
+            continue
+        Ownership.objects.update_or_create(
+            question_id=action.analysis.question_id,
+            target_type=target_type,
+            target_id=target_id,
+            defaults={'owning_analysis_id': action.analysis_id, 'active': True},
+        )
+
+
+def clear_review_ownerships(apps, schema_editor):
+    apps.get_model('question_bank', 'AIReviewOwnership').objects.all().delete()
 
 
 class Migration(migrations.Migration):
@@ -28,4 +63,5 @@ class Migration(migrations.Migration):
                 'constraints': [models.UniqueConstraint(fields=('question', 'target_type', 'target_id'), name='unique_ai_review_owned_relation')],
             },
         ),
+        migrations.RunPython(backfill_review_ownerships, clear_review_ownerships),
     ]
