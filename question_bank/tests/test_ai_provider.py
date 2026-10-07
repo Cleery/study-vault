@@ -2,6 +2,7 @@ import io
 import json
 from types import SimpleNamespace
 from urllib.error import HTTPError
+from urllib.request import Request
 
 import pytest
 
@@ -72,6 +73,13 @@ def openai_response(content, *, headers=None):
 
 
 def image(name, content):
+    suffix = name.rsplit(".", 1)[-1].lower()
+    if suffix == "png":
+        content = b"\x89PNG\r\n\x1a\n" + content
+    elif suffix in {"jpg", "jpeg"}:
+        content = b"\xff\xd8\xff" + content
+    elif suffix == "webp":
+        content = b"RIFF\x00\x00\x00\x00WEBP" + content
     return SimpleNamespace(file=NamedBytesIO(content, name))
 
 
@@ -87,6 +95,10 @@ def provider(transport, **overrides):
         "max_response_bytes": 1024 * 1024,
         "transport": transport,
         "retry_backoff_seconds": 0,
+        "total_timeout_seconds": 30,
+        "resolver": lambda host, port: [
+            (2, 1, 6, "", ("8.8.8.8", port))
+        ],
     }
     values.update(overrides)
     return RelayProvider(**values)
@@ -148,9 +160,9 @@ def test_relay_normalizes_endpoint_and_sends_openai_vision_request():
     assert "端点异号" in text
     assert "题目图片 1" in text and "题目图片 2" in text and "解答图片 1" in text
     assert urls == [
-        "data:image/png;base64,cXVlc3Rpb24tb25l",
-        "data:image/jpeg;base64,cXVlc3Rpb24tdHdv",
-        "data:image/webp;base64,c29sdXRpb24tb25l",
+        "data:image/png;base64,iVBORw0KGgpxdWVzdGlvbi1vbmU=",
+        "data:image/jpeg;base64,/9j/cXVlc3Rpb24tdHdv",
+        "data:image/webp;base64,UklGRgAAAABXRUJQc29sdXRpb24tb25l",
     ]
 
 
@@ -288,7 +300,7 @@ def test_provider_for_config_passes_relay_settings():
 
     config = AIConfig(
         enabled=True,
-        base_url="https://relay.example/openai/v1/",
+        base_url="https://8.8.8.8/openai/v1/",
         api_key="config-key",
         analysis_model="configured-model",
         timeout_seconds=23,
@@ -297,7 +309,7 @@ def test_provider_for_config_passes_relay_settings():
     )
     relay = provider_for_config(config)
 
-    assert relay.endpoint == "https://relay.example/openai/v1/chat/completions"
+    assert relay.endpoint == "https://8.8.8.8/openai/v1/chat/completions"
     assert relay.model_name == "configured-model"
     assert relay.timeout_seconds == 23
     assert relay.max_retries == 1
@@ -322,3 +334,161 @@ def test_provider_retries_can_be_disabled_from_environment(monkeypatch):
     monkeypatch.setenv("AI_MAX_RETRIES", "0")
 
     assert AIConfig.from_env().max_retries == 0
+
+
+def test_relay_rejects_cross_origin_redirect_without_forwarding_authorization():
+    from question_bank.ai.providers import SameOriginRedirectHandler
+
+    handler = SameOriginRedirectHandler()
+    original = Request(
+        "https://relay.example/v1/chat/completions",
+        headers={"Authorization": "Bearer unit-test-key"},
+    )
+
+    with pytest.raises(HTTPError, match="cross-origin redirect blocked"):
+        handler.redirect_request(
+            original,
+            None,
+            302,
+            "found",
+            {},
+            "https://attacker.example/collect",
+        )
+
+
+@pytest.mark.parametrize("name", ["image.gif", "image.svg", "image.bmp"])
+def test_relay_rejects_image_mime_types_outside_allowlist(name):
+    from question_bank.ai.exceptions import AIProviderError
+
+    transport = SequenceTransport(openai_response(json.dumps(VALID_RESULT)))
+
+    with pytest.raises(AIProviderError, match="unsupported MIME"):
+        analyze(provider(transport), question_images=[image(name, b"private")])
+
+    assert transport.calls == []
+
+
+def test_relay_limits_total_image_count_before_sending_request():
+    from question_bank.ai.exceptions import AIProviderError
+
+    transport = SequenceTransport(openai_response(json.dumps(VALID_RESULT)))
+    images = [image(f"{index}.png", b"x") for index in range(4)]
+
+    with pytest.raises(AIProviderError, match="image count limit"):
+        analyze(
+            provider(transport, max_image_count=3),
+            question_images=images,
+            solution_images=[],
+        )
+
+    assert transport.calls == []
+
+
+def test_relay_limits_total_raw_image_bytes_before_sending_request():
+    from question_bank.ai.exceptions import AIProviderError
+
+    transport = SequenceTransport(openai_response(json.dumps(VALID_RESULT)))
+
+    with pytest.raises(AIProviderError, match="image byte limit"):
+        analyze(
+            provider(transport, max_image_bytes=15),
+            question_images=[image("one.png", b"123"), image("two.jpg", b"456")],
+            solution_images=[],
+        )
+
+    assert transport.calls == []
+
+
+def test_relay_total_deadline_caps_retries_backoff_and_response_read():
+    from question_bank.ai.exceptions import AIProviderTimeoutError
+
+    times = iter([0.0, 0.0, 0.0, 2.0, 2.0, 6.0, 6.0, 10.1])
+    transport = SequenceTransport(
+        TimeoutError("first"),
+        TimeoutError("second"),
+        openai_response(json.dumps(VALID_RESULT)),
+    )
+    relay = provider(
+        transport,
+        timeout_seconds=8,
+        total_timeout_seconds=10,
+        retry_backoff_seconds=1,
+        monotonic=lambda: next(times),
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(AIProviderTimeoutError, match="deadline"):
+        analyze(relay)
+
+    assert [timeout for _, timeout in transport.calls] == [8, 4]
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://relay.example/v1",
+        "https://localhost/v1",
+        "https://relay.local/v1",
+        "https://127.0.0.1/v1",
+        "https://10.0.0.2/v1",
+        "https://169.254.1.1/v1",
+        "https://[::1]/v1",
+    ],
+)
+def test_relay_rejects_insecure_or_private_targets_by_default(base_url):
+    with pytest.raises(ValueError):
+        provider(SequenceTransport(), base_url=base_url)
+
+
+def test_relay_rejects_hostname_resolving_to_private_address():
+    resolver = lambda host, port: [(2, 1, 6, "", ("192.168.1.20", port))]
+
+    with pytest.raises(ValueError, match="private network"):
+        provider(
+            SequenceTransport(),
+            base_url="https://relay.example/v1",
+            resolver=resolver,
+        )
+
+
+def test_relay_allows_private_target_only_with_explicit_override():
+    relay = provider(
+        SequenceTransport(openai_response(json.dumps(VALID_RESULT))),
+        base_url="https://127.0.0.1/v1",
+        allow_private_base_url=True,
+    )
+
+    assert relay.endpoint == "https://127.0.0.1/v1/chat/completions"
+
+
+def test_relay_revalidates_dns_before_request_to_block_rebinding():
+    from question_bank.ai.exceptions import AIProviderError
+
+    resolutions = iter(
+        [
+            [(2, 1, 6, "", ("8.8.8.8", 443))],
+            [(2, 1, 6, "", ("127.0.0.1", 443))],
+        ]
+    )
+    transport = SequenceTransport(openai_response(json.dumps(VALID_RESULT)))
+    relay = provider(transport, resolver=lambda host, port: next(resolutions))
+
+    with pytest.raises(ValueError, match="private network"):
+        analyze(relay)
+
+    assert transport.calls == []
+
+
+def test_relay_rejects_response_when_read_finishes_after_total_deadline():
+    from question_bank.ai.exceptions import AIProviderTimeoutError
+
+    times = iter([0.0, 0.0, 0.0, 10.1])
+    transport = SequenceTransport(openai_response(json.dumps(VALID_RESULT)))
+    relay = provider(
+        transport,
+        total_timeout_seconds=10,
+        monotonic=lambda: next(times),
+    )
+
+    with pytest.raises(AIProviderTimeoutError, match="deadline"):
+        analyze(relay)

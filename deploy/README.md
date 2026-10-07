@@ -63,7 +63,7 @@ sudo -u mathvault bash -lc 'set -a; source /etc/math-question-bank.env; set +a; 
 
 AI 默认关闭。启用前需要确认 Provider 对上传图片、识别文本和模型响应的数据保留政策与训练政策，并在 `/etc/math-question-bank.env` 中设置 `AI_ENABLED=true`、`AI_PROVIDER=relay`、Provider 地址、模型名和 `AI_API_KEY`。`AI_BASE_URL` 可填写服务根地址、以 `/v1` 结尾的 API 根地址，或完整的 `/chat/completions` 地址，应用会统一生成 OpenAI 兼容的 Chat Completions 端点。密钥文件权限保持 `0640`，不得把密钥写入代码、模板、JavaScript 或普通日志。
 
-Relay 请求会发送题目图、解答图、校对文本、个人想法和候选知识卡片内容。启用前需要确认这些内容允许离开服务器。`AI_TIMEOUT_SECONDS` 默认值为 `60`；`AI_MAX_RETRIES` 默认值为 `2`，仅对超时、连接错误、HTTP 429 和临时 5xx 响应重试，重试可能造成 Provider 重复处理或重复计费；`AI_MAX_RESPONSE_BYTES` 默认值为 `2097152`，用于限制模型响应体。`AI_RAW_RESPONSE_RETENTION_DAYS` 默认值为 `30`，分析摘要和人工审核记录不受该期限影响。
+Relay 请求会发送题目图、解答图、校对文本、个人想法和候选知识卡片内容。启用前需要确认这些内容允许离开服务器。默认要求 Relay 使用 HTTPS，并拒绝解析到私网、回环、链路本地或保留地址的目标；仅在明确的内网部署场景设置 `AI_ALLOW_PRIVATE_BASE_URL=true`。`AI_TIMEOUT_SECONDS` 默认值为 `60`，单次尝试超时；`AI_TOTAL_TIMEOUT_SECONDS` 默认值为 `90`，覆盖所有重试、退避和响应读取；`AI_MAX_RETRIES` 默认值为 `2`，仅对超时、连接错误、HTTP 429 和临时 5xx 响应重试，重试可能造成 Provider 重复处理或重复计费。`AI_MAX_RESPONSE_BYTES` 默认值为 `2097152`，用于限制模型响应体。每次请求最多发送 `20` 张 PNG/JPEG/WebP 图片，原始图片总大小默认不超过 `41943040` 字节。`AI_RAW_RESPONSE_RETENTION_DAYS` 默认值为 `30`，分析摘要和人工审核记录不受该期限影响。
 
 ## 4. 初始化数据和静态文件
 
@@ -106,7 +106,7 @@ sudo systemctl status math-question-bank.service
 curl -u your-name https://example.com/health/
 ```
 
-Gunicorn 的 worker timeout 固定为 `240` 秒。默认 `AI_TIMEOUT_SECONDS=60` 且最多重试 2 次，最坏请求等待约为 180 秒，剩余时间用于失败状态和分析结果回写。若提高 Provider 超时或重试次数，应按总尝试次数同步提高 Gunicorn timeout，并保留充足的数据库回写余量，否则同步分析请求可能在状态写回前被终止。
+Gunicorn 和 Nginx 的请求 timeout 均固定为 `120` 秒，高于默认 `AI_TOTAL_TIMEOUT_SECONDS=90`，为失败状态和分析结果回写预留时间。若提高 Provider 总 deadline，应同步提高这两个 timeout，并保留数据库回写余量，否则同步分析请求可能在状态写回前被终止。
 
 日志由 journald 保存：
 

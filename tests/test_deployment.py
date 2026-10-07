@@ -19,6 +19,7 @@ def production_env():
             "DEV_AUTH_BYPASS": "false",
             "BACKUP_AGE_PUBLIC_KEY": "age1example",
             "BACKUP_OFFLINE_PATH": "/mnt/offline/math-question-bank",
+            "AI_ENABLED": "false",
         }
     )
     return env
@@ -69,7 +70,7 @@ def test_gunicorn_service_runs_preflight_and_one_worker():
     assert "EnvironmentFile=/etc/math-question-bank.env" in service
     assert "ExecStartPre=" in service and "check-production-config.py" in service
     assert "--workers 1" in service
-    assert "--timeout 240" in service
+    assert "--timeout 120" in service
     assert "config.wsgi:application" in service
 
 
@@ -84,6 +85,67 @@ def test_nginx_protects_all_locations_and_limits_uploads():
     assert "location /media/" in server_block
     assert "location /" in server_block
     assert "proxy_set_header X-Forwarded-Proto $scheme;" in server_block
+    assert "proxy_read_timeout 120s;" in server_block
+
+
+@pytest.mark.parametrize(
+    ("base_url", "message"),
+    [
+        ("http://relay.example/v1", "AI_BASE_URL must use HTTPS"),
+        ("https://127.0.0.1/v1", "AI_BASE_URL must not target a private network"),
+        ("https://relay.local/v1", "AI_BASE_URL must not target a private network"),
+    ],
+)
+def test_production_check_rejects_insecure_or_private_ai_target(base_url, message):
+    env = production_env()
+    env.update(
+        {
+            "AI_ENABLED": "true",
+            "AI_PROVIDER": "relay",
+            "AI_BASE_URL": base_url,
+            "AI_API_KEY": "deployment-test-key",
+        }
+    )
+
+    result = run_production_check(env)
+
+    assert result.returncode != 0
+    assert message in result.stderr
+
+
+def test_production_check_requires_relay_key_when_ai_is_enabled():
+    env = production_env()
+    env.update(
+        {
+            "AI_ENABLED": "true",
+            "AI_PROVIDER": "relay",
+            "AI_BASE_URL": "https://203.0.113.10/v1",
+            "AI_API_KEY": "",
+        }
+    )
+
+    result = run_production_check(env)
+
+    assert result.returncode != 0
+    assert "AI_API_KEY is required" in result.stderr
+
+
+def test_production_check_rejects_ai_deadline_without_proxy_writeback_margin():
+    env = production_env()
+    env.update(
+        {
+            "AI_ENABLED": "true",
+            "AI_PROVIDER": "relay",
+            "AI_BASE_URL": "https://8.8.8.8/v1",
+            "AI_API_KEY": "deployment-test-key",
+            "AI_TOTAL_TIMEOUT_SECONDS": "120",
+        }
+    )
+
+    result = run_production_check(env)
+
+    assert result.returncode != 0
+    assert "AI_TOTAL_TIMEOUT_SECONDS must be less than 120" in result.stderr
 
 
 def test_backup_units_pause_writes_and_run_daily():

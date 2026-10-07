@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -13,7 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .exceptions import AIProviderError, AIProviderTimeoutError, AIResultValidationError
 from .schemas import AnalysisResult
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 CHAT_COMPLETIONS_PATH = ("chat", "completions")
+ALLOWED_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 
 
 class AnalysisProvider(Protocol):
@@ -65,10 +67,77 @@ class PlaceholderProvider:
         }
 
 
+def _origin(url: str) -> tuple[str, str, int]:
+    parts = urlsplit(url)
+    default_port = 443 if parts.scheme == "https" else 80
+    return parts.scheme.lower(), (parts.hostname or "").lower(), parts.port or default_port
+
+
+class SameOriginRedirectHandler(HTTPRedirectHandler):
+    """Permit redirects only when credentials remain on the same origin."""
+
+    def __init__(
+        self,
+        *,
+        allow_private: bool = False,
+        resolver: Callable[..., Any] = socket.getaddrinfo,
+    ):
+        super().__init__()
+        self._allow_private = allow_private
+        self._resolver = resolver
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if _origin(req.full_url) != _origin(newurl):
+            raise HTTPError(newurl, code, "cross-origin redirect blocked", headers, fp)
+        _validate_public_target(
+            newurl,
+            allow_private=self._allow_private,
+            resolver=self._resolver,
+        )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _address_is_internal(address: str) -> bool:
+    parsed = ipaddress.ip_address(address.split("%", 1)[0])
+    return not parsed.is_global
+
+
+def _validate_public_target(
+    endpoint: str,
+    *,
+    allow_private: bool,
+    resolver: Callable[..., Any],
+) -> None:
+    if allow_private:
+        return
+    parts = urlsplit(endpoint)
+    hostname = parts.hostname or ""
+    if hostname.lower() == "localhost" or hostname.lower().endswith(".local"):
+        raise ValueError("AI_BASE_URL must not target a private network")
+    try:
+        is_internal_literal = _address_is_internal(hostname)
+    except ValueError:
+        is_internal_literal = None
+    if is_internal_literal is not None:
+        if is_internal_literal:
+            raise ValueError("AI_BASE_URL must not target a private network")
+        return
+    try:
+        addresses = resolver(hostname, parts.port or 443)
+    except OSError as exc:
+        raise ValueError("AI_BASE_URL hostname could not be resolved") from exc
+    if not addresses:
+        raise ValueError("AI_BASE_URL hostname could not be resolved")
+    for entry in addresses:
+        sockaddr = entry[4]
+        if _address_is_internal(str(sockaddr[0])):
+            raise ValueError("AI_BASE_URL must not target a private network")
+
+
 def _normalize_endpoint(base_url: str) -> str:
     parts = urlsplit(base_url.strip())
-    if parts.scheme not in {"http", "https"} or not parts.hostname:
-        raise ValueError("AI_BASE_URL must be an absolute HTTP(S) URL")
+    if parts.scheme != "https" or not parts.hostname:
+        raise ValueError("AI_BASE_URL must use HTTPS")
     if parts.username or parts.password or parts.query or parts.fragment:
         raise ValueError("AI_BASE_URL must not contain credentials, query, or fragment")
     path_parts = [part for part in parts.path.split("/") if part]
@@ -78,15 +147,21 @@ def _normalize_endpoint(base_url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
-def _open_url(request: Request, *, timeout: int):
-    return urlopen(request, timeout=timeout)
+def _default_transport(*, allow_private: bool, resolver: Callable[..., Any]):
+    opener = build_opener(
+        SameOriginRedirectHandler(
+            allow_private=allow_private,
+            resolver=resolver,
+        )
+    )
+    return opener.open
 
 
-def _image_data_url(attachment: Any) -> str:
+def _image_data_url(attachment: Any, *, byte_limit: int) -> tuple[str, int]:
     source = getattr(attachment, "file", attachment)
     name = str(getattr(source, "name", ""))
     mime_type = mimetypes.guess_type(name)[0]
-    if not mime_type or not mime_type.startswith("image/"):
+    if mime_type not in ALLOWED_IMAGE_MIME_TYPES:
         raise AIProviderError("image has an unsupported MIME type")
 
     content = None
@@ -95,7 +170,7 @@ def _image_data_url(attachment: Any) -> str:
             source.open("rb")
         if hasattr(source, "seek"):
             source.seek(0)
-        content = source.read()
+        content = source.read(byte_limit + 1)
     except (OSError, ValueError) as exc:
         raise AIProviderError("image could not be read") from exc
     finally:
@@ -103,8 +178,19 @@ def _image_data_url(attachment: Any) -> str:
             source.close()
     if not isinstance(content, bytes):
         raise AIProviderError("image could not be read")
+    if len(content) > byte_limit:
+        raise AIProviderError("image payload exceeded total image byte limit")
+    detected_mime = None
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        detected_mime = "image/png"
+    elif content.startswith(b"\xff\xd8\xff"):
+        detected_mime = "image/jpeg"
+    elif len(content) >= 12 and content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        detected_mime = "image/webp"
+    if detected_mime != mime_type:
+        raise AIProviderError("image has an unsupported MIME type")
     encoded = base64.b64encode(content).decode("ascii")
-    return f"data:{mime_type};base64,{encoded}"
+    return f"data:{mime_type};base64,{encoded}", len(content)
 
 
 def _card_payload(card: Any) -> dict[str, str]:
@@ -143,10 +229,17 @@ class RelayProvider:
         api_key: str,
         model_name: str,
         timeout_seconds: int = 60,
+        total_timeout_seconds: int = 90,
         max_retries: int = 2,
         max_response_bytes: int = 2 * 1024 * 1024,
+        max_image_count: int = 20,
+        max_image_bytes: int = 40 * 1024 * 1024,
+        allow_private_base_url: bool = False,
         transport: Callable[..., Any] | None = None,
         retry_backoff_seconds: float = 0.25,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+        resolver: Callable[..., Any] = socket.getaddrinfo,
     ):
         if not api_key:
             raise ValueError("AI_API_KEY is required for relay provider")
@@ -154,21 +247,42 @@ class RelayProvider:
             raise ValueError("AI_ANALYSIS_MODEL is required for relay provider")
         if timeout_seconds <= 0:
             raise ValueError("AI_TIMEOUT_SECONDS must be positive")
+        if total_timeout_seconds <= 0:
+            raise ValueError("AI_TOTAL_TIMEOUT_SECONDS must be positive")
         if not 0 <= max_retries <= 5:
             raise ValueError("AI_MAX_RETRIES must be in 0..5")
         if max_response_bytes <= 0:
             raise ValueError("AI_MAX_RESPONSE_BYTES must be positive")
+        if max_image_count <= 0:
+            raise ValueError("AI_MAX_IMAGE_COUNT must be positive")
+        if max_image_bytes <= 0:
+            raise ValueError("AI_MAX_IMAGE_BYTES must be positive")
         if retry_backoff_seconds < 0:
             raise ValueError("retry_backoff_seconds must not be negative")
 
         self.endpoint = _normalize_endpoint(base_url)
+        _validate_public_target(
+            self.endpoint,
+            allow_private=allow_private_base_url,
+            resolver=resolver,
+        )
         self._api_key = api_key
         self.model_name = model_name.strip()
         self.timeout_seconds = timeout_seconds
+        self.total_timeout_seconds = total_timeout_seconds
         self.max_retries = max_retries
         self.max_response_bytes = max_response_bytes
-        self._transport = transport or _open_url
+        self.max_image_count = max_image_count
+        self.max_image_bytes = max_image_bytes
+        self._allow_private_base_url = allow_private_base_url
+        self._resolver = resolver
+        self._transport = transport or _default_transport(
+            allow_private=allow_private_base_url,
+            resolver=resolver,
+        )
         self._retry_backoff_seconds = retry_backoff_seconds
+        self._monotonic = monotonic
+        self._sleep = sleep
 
     def _messages(
         self,
@@ -193,6 +307,10 @@ class RelayProvider:
             "personal_notes": personal_notes,
             "knowledge_cards": [_card_payload(card) for card in knowledge_cards],
         }
+        images = list(question_images) + list(solution_images)
+        if len(images) > self.max_image_count:
+            raise AIProviderError("image count limit exceeded")
+        remaining_bytes = self.max_image_bytes
         content: list[dict[str, Any]] = [
             {
                 "type": "text",
@@ -202,20 +320,30 @@ class RelayProvider:
         ]
         for index, attachment in enumerate(question_images, start=1):
             content.append({"type": "text", "text": f"题目图片 {index}"})
+            data_url, consumed = _image_data_url(
+                attachment, byte_limit=remaining_bytes
+            )
+            remaining_bytes -= consumed
             content.append(
-                {"type": "image_url", "image_url": {"url": _image_data_url(attachment)}}
+                {"type": "image_url", "image_url": {"url": data_url}}
             )
         for index, attachment in enumerate(solution_images, start=1):
             content.append({"type": "text", "text": f"解答图片 {index}"})
+            data_url, consumed = _image_data_url(
+                attachment, byte_limit=remaining_bytes
+            )
+            remaining_bytes -= consumed
             content.append(
-                {"type": "image_url", "image_url": {"url": _image_data_url(attachment)}}
+                {"type": "image_url", "image_url": {"url": data_url}}
             )
         return [
             {"role": "system", "content": instructions},
             {"role": "user", "content": content},
         ]
 
-    def _request(self, messages: list[dict[str, Any]]) -> tuple[bytes, str]:
+    def _request(
+        self, messages: list[dict[str, Any]], *, deadline: float
+    ) -> tuple[bytes, str]:
         request_id = uuid.uuid4().hex
         payload = json.dumps(
             {
@@ -239,8 +367,21 @@ class RelayProvider:
         )
 
         for attempt in range(self.max_retries + 1):
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise AIProviderTimeoutError("relay request deadline exceeded")
+            _validate_public_target(
+                self.endpoint,
+                allow_private=self._allow_private_base_url,
+                resolver=self._resolver,
+            )
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise AIProviderTimeoutError("relay request deadline exceeded")
             try:
-                with self._transport(request, timeout=self.timeout_seconds) as response:
+                with self._transport(
+                    request, timeout=min(self.timeout_seconds, remaining)
+                ) as response:
                     status = getattr(response, "status", 200)
                     if not 200 <= status < 300:
                         raise HTTPError(
@@ -257,6 +398,8 @@ class RelayProvider:
                     body = response.read(self.max_response_bytes + 1)
                     if len(body) > self.max_response_bytes:
                         raise AIProviderError("relay response exceeded size limit")
+                    if self._monotonic() >= deadline:
+                        raise AIProviderTimeoutError("relay request deadline exceeded")
                     return body, request_id
             except HTTPError as exc:
                 category = f"http_{exc.code}"
@@ -270,6 +413,8 @@ class RelayProvider:
                     raise AIProviderError(
                         f"relay request failed with HTTP status {exc.code}"
                     ) from None
+            except AIProviderTimeoutError:
+                raise
             except (TimeoutError, socket.timeout):
                 logger.warning(
                     "AI relay request failed request_id=%s category=timeout", request_id
@@ -300,8 +445,12 @@ class RelayProvider:
                 if attempt >= self.max_retries:
                     raise AIProviderError("relay network request failed") from None
 
-            if self._retry_backoff_seconds:
-                time.sleep(self._retry_backoff_seconds * (2**attempt))
+            delay = self._retry_backoff_seconds * (2**attempt)
+            if delay:
+                remaining = deadline - self._monotonic()
+                if delay >= remaining:
+                    raise AIProviderTimeoutError("relay request deadline exceeded")
+                self._sleep(delay)
 
         raise AIProviderError("relay request failed")
 
@@ -314,6 +463,7 @@ class RelayProvider:
         knowledge_cards: Sequence[Any],
         personal_notes: str,
     ) -> dict[str, Any]:
+        started = self._monotonic()
         messages = self._messages(
             question_images=question_images,
             solution_images=solution_images,
@@ -321,7 +471,9 @@ class RelayProvider:
             knowledge_cards=knowledge_cards,
             personal_notes=personal_notes,
         )
-        body, request_id = self._request(messages)
+        body, request_id = self._request(
+            messages, deadline=started + self.total_timeout_seconds
+        )
         try:
             envelope = json.loads(body.decode("utf-8"))
             if not isinstance(envelope, Mapping):
@@ -356,7 +508,11 @@ def provider_for_config(config: Any) -> AnalysisProvider:
             api_key=getattr(config, "api_key", ""),
             model_name=getattr(config, "analysis_model", ""),
             timeout_seconds=getattr(config, "timeout_seconds", 60),
+            total_timeout_seconds=getattr(config, "total_timeout_seconds", 90),
             max_retries=getattr(config, "max_retries", 2),
             max_response_bytes=getattr(config, "max_response_bytes", 2 * 1024 * 1024),
+            max_image_count=getattr(config, "max_image_count", 20),
+            max_image_bytes=getattr(config, "max_image_bytes", 40 * 1024 * 1024),
+            allow_private_base_url=getattr(config, "allow_private_base_url", False),
         )
     return PlaceholderProvider()
