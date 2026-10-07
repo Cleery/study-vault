@@ -254,6 +254,7 @@ class _PinnedResponse:
     def __init__(self, response: Any, connection: Any):
         self._response = response
         self._connection = connection
+        self._closed = False
         self.status = response.status
         self.headers = response.headers
 
@@ -270,7 +271,13 @@ class _PinnedResponse:
             sock.settimeout(timeout)
 
     def close(self) -> None:
-        self._connection.close()
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._response.close()
+        finally:
+            self._connection.close()
 
     def __enter__(self):
         return self
@@ -600,7 +607,10 @@ class RelayProvider:
     def _close_response(response: Any) -> None:
         close = getattr(response, "close", None)
         if close is not None:
-            close()
+            try:
+                close()
+            except Exception:
+                return
 
     def _messages(
         self,

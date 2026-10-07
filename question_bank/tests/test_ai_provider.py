@@ -26,9 +26,13 @@ class FakeResponse:
         self.status = status
         self.headers = headers or {}
         self._stream = io.BytesIO(payload)
+        self.closed = False
 
     def read(self, size=-1):
         return self._stream.read(size)
+
+    def close(self):
+        self.closed = True
 
     def __enter__(self):
         return self
@@ -800,6 +804,129 @@ class ShortReceiveLoopResponse(BlockingBodyResponse):
             received.extend(b"x")
             self.receive_count += 1
         return bytes(received)
+
+
+def test_pinned_response_closes_underlying_response_before_connection_once():
+    from question_bank.ai.providers import _PinnedResponse
+
+    close_order = []
+
+    class CloseTrackedResponse(FakeResponse):
+        def close(self):
+            close_order.append("response")
+
+    class CloseTrackedConnection:
+        sock = None
+
+        def close(self):
+            close_order.append("connection")
+
+    response = _PinnedResponse(CloseTrackedResponse(b""), CloseTrackedConnection())
+
+    response.close()
+    response.close()
+
+    assert close_order == ["response", "connection"]
+
+
+def test_pinned_response_closes_connection_when_underlying_close_raises():
+    from question_bank.ai.providers import _PinnedResponse
+
+    close_order = []
+
+    class FailingCloseResponse(FakeResponse):
+        def close(self):
+            close_order.append("response")
+            raise OSError("response close failed")
+
+    class CloseTrackedConnection:
+        sock = None
+
+        def close(self):
+            close_order.append("connection")
+
+    response = _PinnedResponse(FailingCloseResponse(b""), CloseTrackedConnection())
+
+    with pytest.raises(OSError, match="response close failed"):
+        response.close()
+    response.close()
+
+    assert close_order == ["response", "connection"]
+
+
+class SocketBackedWillCloseResponse:
+    status = 200
+    headers = {}
+    will_close = True
+
+    def __init__(self, *, fail_on_close=False):
+        self.close_called = threading.Event()
+        self.read_started = threading.Event()
+        self.read_exited = threading.Event()
+        self.socket_closed = threading.Event()
+        self.file_closed = False
+        self.fail_on_close = fail_on_close
+
+        response = self
+
+        class FakeSocket:
+            def settimeout(self, timeout):
+                response.timeout = timeout
+
+        class FakeFile:
+            raw = SimpleNamespace(_sock=FakeSocket())
+
+            def close(self):
+                response.file_closed = True
+                response.socket_closed.set()
+
+        self.fp = FakeFile()
+
+    def read(self, size=-1):
+        self.read_started.set()
+        self.socket_closed.wait(1)
+        self.read_exited.set()
+        return b""
+
+    def close(self):
+        self.close_called.set()
+        self.fp.close()
+        if self.fail_on_close:
+            raise OSError("response close failed")
+
+
+@pytest.mark.parametrize("fail_on_close", [False, True])
+def test_body_deadline_closes_will_close_response_fp_socket_and_reader(
+    fail_on_close
+):
+    from question_bank.ai.exceptions import AIProviderTimeoutError
+    from question_bank.ai.providers import _PinnedResponse
+
+    raw_response = SocketBackedWillCloseResponse(fail_on_close=fail_on_close)
+
+    class DetachedConnection:
+        sock = None
+
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    connection = DetachedConnection()
+    response = _PinnedResponse(raw_response, connection)
+    relay = provider(SequenceTransport(), timeout_seconds=1)
+    started = time.monotonic()
+
+    with pytest.raises(AIProviderTimeoutError, match="deadline"):
+        relay._read_response(response, deadline=started + 0.04)
+
+    assert time.monotonic() - started < 0.2
+    assert raw_response.close_called.is_set()
+    assert raw_response.file_closed is True
+    assert raw_response.socket_closed.is_set()
+    assert raw_response.read_exited.wait(0.1)
+    assert connection.closed is True
 
 
 @pytest.mark.parametrize("response_type", [BlockingBodyResponse, ShortReceiveLoopResponse])
