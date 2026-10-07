@@ -1,0 +1,22 @@
+[Unit]
+Description=Math Question Bank AI Worker
+After=network.target
+
+[Service]
+Type=simple
+User=mathvault
+Group=www-data
+WorkingDirectory=/srv/math-question-bank/current
+EnvironmentFile=/etc/math-question-bank.env
+UMask=0027
+ExecStart=/srv/math-question-bank/venv/bin/python manage.py process_ai_tasks
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/math-question-bank/shared
+
+[Install]
+WantedBy=multi-user.target

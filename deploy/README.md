@@ -96,22 +96,26 @@ sudo systemctl reload nginx
 
 Basic Auth 配置位于 HTTPS `server` 级别，应用、媒体和静态文件均受保护。Nginx 单次请求限制为 12 MB，应用仍限制单张图片本体不超过 10 MB。
 
-## 6. Gunicorn 服务
+## 6. Gunicorn 与 AI worker 服务
 
 ```bash
 sudo cp deploy/gunicorn.service /etc/systemd/system/math-question-bank.service
+sudo cp deploy/ai-worker.service /etc/systemd/system/math-question-bank-ai-worker.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now math-question-bank.service
+sudo systemctl enable --now math-question-bank-ai-worker.service
 sudo systemctl status math-question-bank.service
+sudo systemctl status math-question-bank-ai-worker.service
 curl -u your-name https://example.com/health/
 ```
 
-Gunicorn 和 Nginx 的请求 timeout 均固定为 `120` 秒，高于默认 `AI_TOTAL_TIMEOUT_SECONDS=90`，为失败状态和分析结果回写预留时间。若提高 Provider 总 deadline，应同步提高这两个 timeout，并保留数据库回写余量，否则同步分析请求可能在状态写回前被终止。
+Web 请求只负责创建数据库中的 AI 分析任务。`math-question-bank-ai-worker.service` 独立认领任务并调用 Relay，`AI_TOTAL_TIMEOUT_SECONDS` 只约束后台 Provider 调用。worker 异常退出后由 systemd 重启，超时停留在 `analyzing` 的任务会重新进入处理流程。
 
 日志由 journald 保存：
 
 ```bash
 journalctl -u math-question-bank.service -f
+journalctl -u math-question-bank-ai-worker.service -f
 ```
 
 Ubuntu 默认的 journald 和 Nginx logrotate 配置负责日志轮转。可按磁盘容量调整 `/etc/systemd/journald.conf` 与 `/etc/logrotate.d/nginx`。

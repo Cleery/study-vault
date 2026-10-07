@@ -167,7 +167,7 @@ def _mark_failed(
     QuestionAIAnalysis.objects.filter(
         pk=analysis.pk,
         version=analysis.version,
-        status=Question.AI_STATUS_PENDING,
+        status__in=[Question.AI_STATUS_PENDING, Question.AI_STATUS_ANALYZING],
     ).update(**values)
     latest_id = (
         QuestionAIAnalysis.objects.filter(question_id=analysis.question_id)
@@ -211,13 +211,14 @@ def analyze_question(
     provider: AnalysisProvider | None = None,
     config: AIConfig | None = None,
     force: bool = False,
+    _existing_analysis: QuestionAIAnalysis | None = None,
 ) -> QuestionAIAnalysis:
     """Analyze one question, reusing an existing result for identical input."""
 
     config = (config or AIConfig.from_env()).validated()
     cards = list(KnowledgeCard.objects.filter(subject_id=question.subject_id))
     fingerprint = _fingerprint(question, cards)
-    if not force:
+    if _existing_analysis is None and not force:
         existing = question.ai_analyses.exclude(
             status=Question.AI_STATUS_FAILED
         ).filter(input_fingerprint=fingerprint).order_by("-version").first()
@@ -228,35 +229,49 @@ def analyze_question(
         locked = Question.objects.select_for_update().get(pk=question.pk)
         cards = list(KnowledgeCard.objects.filter(subject_id=locked.subject_id))
         fingerprint = _fingerprint(locked, cards)
-        if not force:
-            existing = locked.ai_analyses.exclude(
-                status=Question.AI_STATUS_FAILED
-            ).filter(input_fingerprint=fingerprint).order_by("-version").first()
-            if existing is not None:
-                return existing
-        while True:
-            analysis, created = QuestionAIAnalysis.objects.get_or_create(
-                question=locked,
-                version=_new_version(locked, fingerprint),
-                defaults={
-                    "input_fingerprint": fingerprint,
-                    "status": Question.AI_STATUS_PENDING,
-                    "provider": "",
-                    "model": "",
-                },
+        if _existing_analysis is not None:
+            analysis = QuestionAIAnalysis.objects.select_for_update().get(
+                pk=_existing_analysis.pk,
+                question_id=locked.pk,
             )
-            if created:
-                break
-            if (
-                analysis.input_fingerprint == fingerprint
-                and analysis.status != Question.AI_STATUS_FAILED
-            ):
-                return analysis
+        else:
+            if not force:
+                existing = locked.ai_analyses.exclude(
+                    status=Question.AI_STATUS_FAILED
+                ).filter(input_fingerprint=fingerprint).order_by("-version").first()
+                if existing is not None:
+                    return existing
+            while True:
+                analysis, created = QuestionAIAnalysis.objects.get_or_create(
+                    question=locked,
+                    version=_new_version(locked, fingerprint),
+                    defaults={
+                        "input_fingerprint": fingerprint,
+                        "status": Question.AI_STATUS_PENDING,
+                        "provider": "",
+                        "model": "",
+                    },
+                )
+                if created:
+                    break
+                if (
+                    analysis.input_fingerprint == fingerprint
+                    and analysis.status != Question.AI_STATUS_FAILED
+                ):
+                    return analysis
+        if analysis.status not in {
+            Question.AI_STATUS_PENDING,
+            Question.AI_STATUS_ANALYZING,
+        }:
+            return analysis
         locked.ai_status = Question.AI_STATUS_ANALYZING if config.enabled else Question.AI_STATUS_PENDING
         locked.save(update_fields=["ai_status", "updated_at"])
         source_question = locked
 
     if not config.enabled:
+        return analysis
+
+    if provider is None and config.provider == "relay":
         return analysis
 
     corrected_text = {
@@ -356,7 +371,10 @@ def analyze_question(
                 QuestionAIAnalysis.objects.filter(
                     pk=analysis.pk,
                     version=analysis.version,
-                    status=Question.AI_STATUS_PENDING,
+                    status__in=[
+                        Question.AI_STATUS_PENDING,
+                        Question.AI_STATUS_ANALYZING,
+                    ],
                 ).update(
                     error_message="输入或分析版本在处理期间发生变化，结果未写回",
                     updated_at=timezone.now(),
@@ -367,7 +385,7 @@ def analyze_question(
             updated = QuestionAIAnalysis.objects.filter(
                 pk=analysis.pk,
                 version=analysis.version,
-                status=Question.AI_STATUS_PENDING,
+                status__in=[Question.AI_STATUS_PENDING, Question.AI_STATUS_ANALYZING],
             ).update(
                 status=result.status.value,
                 provider=_redact_secret(
@@ -387,6 +405,8 @@ def analyze_question(
                 ),
                 error_message="",
                 completed_at=completed_at,
+                next_attempt_at=None,
+                started_at=None,
                 updated_at=completed_at,
             )
             if not updated:
@@ -411,5 +431,97 @@ def analyze_question(
         )
 
 
-__all__ = ["analyze_question", "purge_expired_raw_responses"]
+def process_next_ai_task(*, config: AIConfig | None = None) -> Any | None:
+    """Claim and process one due database-backed AI analysis task."""
+
+    config = (config or AIConfig.from_env()).validated()
+    if not config.enabled:
+        return None
+
+    now = timezone.now()
+    stale_before = now - timedelta(seconds=config.total_timeout_seconds)
+    due = (
+        Q(status=Question.AI_STATUS_PENDING)
+        & (Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now))
+    ) | Q(
+        status=Question.AI_STATUS_ANALYZING,
+        started_at__lte=stale_before,
+    )
+
+    with transaction.atomic():
+        analysis = (
+            QuestionAIAnalysis.objects.select_for_update()
+            .filter(due)
+            .order_by("created_at", "id")
+            .first()
+        )
+        if analysis is None:
+            return None
+        analysis.status = Question.AI_STATUS_ANALYZING
+        analysis.attempt_count += 1
+        analysis.started_at = now
+        analysis.next_attempt_at = None
+        analysis.save(
+            update_fields=[
+                "status",
+                "attempt_count",
+                "started_at",
+                "next_attempt_at",
+                "updated_at",
+            ]
+        )
+        Question.objects.filter(pk=analysis.question_id).update(
+            ai_status=Question.AI_STATUS_ANALYZING,
+            updated_at=now,
+        )
+
+    try:
+        provider = provider_for_config(config)
+    except Exception:
+        result = _mark_failed(
+            analysis,
+            message="AI Provider 配置无效，请检查服务配置。",
+            provider=PlaceholderProvider(),
+            secret=config.api_key,
+        )
+    else:
+        result = analyze_question(
+            analysis.question,
+            provider=provider,
+            config=config,
+            _existing_analysis=analysis,
+        )
+
+    if (
+        result.status == Question.AI_STATUS_FAILED
+        and result.attempt_count <= config.max_retries
+    ):
+        retry_at = timezone.now() + timedelta(
+            seconds=min(300, 2 ** max(0, result.attempt_count - 1))
+        )
+        requeued = QuestionAIAnalysis.objects.filter(
+            pk=result.pk,
+            status=Question.AI_STATUS_FAILED,
+            attempt_count=result.attempt_count,
+        ).update(
+            status=Question.AI_STATUS_PENDING,
+            next_attempt_at=retry_at,
+            started_at=None,
+            completed_at=None,
+            updated_at=timezone.now(),
+        )
+        if requeued:
+            Question.objects.filter(
+                pk=result.question_id,
+                ai_status=Question.AI_STATUS_FAILED,
+            ).update(ai_status=Question.AI_STATUS_ANALYZING, updated_at=timezone.now())
+
+    return analysis.pk
+
+
+__all__ = [
+    "analyze_question",
+    "process_next_ai_task",
+    "purge_expired_raw_responses",
+]
 

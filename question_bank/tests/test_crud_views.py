@@ -152,6 +152,29 @@ def test_duplicate_analysis_submission_creates_one_version(client, subject, monk
 
 
 @pytest.mark.django_db
+def test_relay_start_returns_without_running_provider(client, subject, monkeypatch):
+    monkeypatch.setenv("AI_ENABLED", "true")
+    monkeypatch.setenv("AI_PROVIDER", "relay")
+    monkeypatch.setenv("AI_API_KEY", "test-key")
+    monkeypatch.setenv("AI_BASE_URL", "https://8.8.8.8/v1")
+    monkeypatch.setattr(
+        "question_bank.ai.service.provider_for_config",
+        lambda config: (_ for _ in ()).throw(
+            AssertionError("relay called inside web request")
+        ),
+    )
+    question = Question.objects.create(subject=subject, title="快速入队")
+
+    response = client.post(
+        reverse("question-analysis-start", args=[question.pk]),
+        {"analysis_version": "0", "input_fingerprint": ""},
+    )
+
+    assert response.status_code == 302
+    assert question.ai_analyses.get().status == Question.AI_STATUS_PENDING
+
+
+@pytest.mark.django_db
 def test_ai_disabled_does_not_affect_normal_question_and_image_save(
     client, subject, monkeypatch, tmp_path
 ):

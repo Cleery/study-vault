@@ -193,6 +193,9 @@ class QuestionAIAnalysis(TimeStampedModel):
     raw_response = models.JSONField(default=dict)
     error_message = models.TextField(blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    attempt_count = models.PositiveIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-version", "-created_at", "-id"]
@@ -206,6 +209,10 @@ class QuestionAIAnalysis(TimeStampedModel):
             models.Index(fields=["question", "-version"]),
             models.Index(fields=["status", "-created_at"]),
             models.Index(fields=["input_fingerprint"]),
+            models.Index(
+                fields=["status", "next_attempt_at"],
+                name="qb_ai_task_due_idx",
+            ),
         ]
 
     def __str__(self):

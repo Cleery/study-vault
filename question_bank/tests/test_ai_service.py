@@ -84,7 +84,11 @@ def test_provider_construction_failure_marks_analysis_failed(subject, monkeypatc
 
     analysis = analyze_question(
         question,
-        config=AIConfig(enabled=True, api_key="constructor-secret"),
+        config=AIConfig(
+            enabled=True,
+            provider="placeholder",
+            api_key="constructor-secret",
+        ),
     )
 
     question.refresh_from_db()
@@ -231,6 +235,185 @@ def test_failed_analysis_can_retry_same_input_as_new_version(subject):
     assert retried.version == failed.version + 1
     assert retried.status == Question.AI_STATUS_AWAITING_REVIEW
     assert question.ai_status == Question.AI_STATUS_AWAITING_REVIEW
+
+
+@pytest.mark.django_db
+def test_relay_analysis_is_queued_without_constructing_provider(subject, monkeypatch):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question
+
+    question = Question.objects.create(subject=subject, title="Relay 入队")
+    monkeypatch.setattr(
+        "question_bank.ai.service.provider_for_config",
+        lambda config: (_ for _ in ()).throw(
+            AssertionError("web request constructed relay provider")
+        ),
+    )
+
+    analysis = analyze_question(
+        question,
+        config=AIConfig(enabled=True, provider="relay", api_key="test-key"),
+    )
+
+    question.refresh_from_db()
+    assert analysis.status == Question.AI_STATUS_PENDING
+    assert analysis.attempt_count == 0
+    assert question.ai_status == Question.AI_STATUS_ANALYZING
+
+
+@pytest.mark.django_db
+def test_worker_processes_pending_analysis_once(subject, monkeypatch):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question, process_next_ai_task
+
+    question = Question.objects.create(
+        subject=subject,
+        title="Worker 成功",
+        recognized_statement="人工文本",
+    )
+    analysis = analyze_question(
+        question,
+        config=AIConfig(enabled=True, provider="relay", api_key="test-key"),
+    )
+    provider = SpyProvider()
+    monkeypatch.setattr(
+        "question_bank.ai.service.provider_for_config",
+        lambda config: provider,
+    )
+
+    processed = process_next_ai_task(
+        config=AIConfig(enabled=True, provider="relay", api_key="test-key")
+    )
+
+    analysis.refresh_from_db()
+    assert processed == analysis.pk
+    assert provider.calls == 1
+    assert analysis.status == Question.AI_STATUS_AWAITING_REVIEW
+    assert analysis.attempt_count == 1
+    assert process_next_ai_task(
+        config=AIConfig(enabled=True, provider="relay", api_key="test-key")
+    ) is None
+
+
+@pytest.mark.django_db
+def test_worker_requeues_retryable_failure_and_recovers_after_restart(
+    subject, monkeypatch
+):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question, process_next_ai_task
+
+    question = Question.objects.create(subject=subject, title="Worker 重试")
+    analysis = analyze_question(
+        question,
+        config=AIConfig(enabled=True, provider="relay", api_key="test-key"),
+    )
+    providers = iter(
+        [RaisingProvider(TimeoutError("temporary")), SpyProvider()]
+    )
+    monkeypatch.setattr(
+        "question_bank.ai.service.provider_for_config",
+        lambda config: next(providers),
+    )
+    config = AIConfig(
+        enabled=True,
+        provider="relay",
+        api_key="test-key",
+        max_retries=2,
+    )
+
+    assert process_next_ai_task(config=config) == analysis.pk
+    analysis.refresh_from_db()
+    assert analysis.status == Question.AI_STATUS_PENDING
+    assert analysis.attempt_count == 1
+    QuestionAIAnalysis.objects.filter(pk=analysis.pk).update(
+        next_attempt_at=timezone.now() - timedelta(seconds=1)
+    )
+
+    assert process_next_ai_task(config=config) == analysis.pk
+    analysis.refresh_from_db()
+    assert analysis.status == Question.AI_STATUS_AWAITING_REVIEW
+    assert analysis.attempt_count == 2
+
+
+@pytest.mark.django_db
+def test_worker_recovers_stale_analyzing_task(subject, monkeypatch):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question, process_next_ai_task
+
+    question = Question.objects.create(subject=subject, title="Worker 重启恢复")
+    analysis = analyze_question(
+        question,
+        config=AIConfig(enabled=True, provider="relay", api_key="test-key"),
+    )
+    QuestionAIAnalysis.objects.filter(pk=analysis.pk).update(
+        status=Question.AI_STATUS_ANALYZING,
+        started_at=timezone.now() - timedelta(minutes=5),
+    )
+    monkeypatch.setattr(
+        "question_bank.ai.service.provider_for_config",
+        lambda config: SpyProvider(),
+    )
+
+    processed = process_next_ai_task(
+        config=AIConfig(
+            enabled=True,
+            provider="relay",
+            api_key="test-key",
+            total_timeout_seconds=30,
+        )
+    )
+
+    analysis.refresh_from_db()
+    assert processed == analysis.pk
+    assert analysis.status == Question.AI_STATUS_AWAITING_REVIEW
+
+
+@pytest.mark.django_db
+def test_worker_keeps_failure_after_retry_budget_is_exhausted(subject, monkeypatch):
+    from question_bank.ai.config import AIConfig
+    from question_bank.ai.service import analyze_question, process_next_ai_task
+
+    question = Question.objects.create(subject=subject, title="Worker 重试耗尽")
+    analysis = analyze_question(
+        question,
+        config=AIConfig(enabled=True, provider="relay", api_key="test-key"),
+    )
+    monkeypatch.setattr(
+        "question_bank.ai.service.provider_for_config",
+        lambda config: RaisingProvider(TimeoutError("temporary")),
+    )
+
+    assert process_next_ai_task(
+        config=AIConfig(
+            enabled=True,
+            provider="relay",
+            api_key="test-key",
+            max_retries=0,
+        )
+    ) == analysis.pk
+
+    analysis.refresh_from_db()
+    question.refresh_from_db()
+    assert analysis.status == Question.AI_STATUS_FAILED
+    assert analysis.attempt_count == 1
+    assert question.ai_status == Question.AI_STATUS_FAILED
+
+
+@pytest.mark.django_db
+def test_process_ai_tasks_once_processes_one_task(monkeypatch):
+    from django.core.management import call_command
+    from question_bank.management.commands import process_ai_tasks
+
+    calls = []
+    monkeypatch.setattr(
+        process_ai_tasks,
+        "process_next_ai_task",
+        lambda: calls.append("processed") or None,
+    )
+
+    call_command("process_ai_tasks", "--once")
+
+    assert calls == ["processed"]
 
 
 @pytest.mark.django_db

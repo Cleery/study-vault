@@ -74,6 +74,16 @@ def test_gunicorn_service_runs_preflight_and_one_worker():
     assert "config.wsgi:application" in service
 
 
+def test_ai_worker_runs_as_independent_restartable_systemd_service():
+    service = (ROOT / "deploy" / "ai-worker.service").read_text(encoding="utf-8")
+
+    assert "User=mathvault" in service
+    assert "EnvironmentFile=/etc/math-question-bank.env" in service
+    assert "manage.py process_ai_tasks" in service
+    assert "Restart=on-failure" in service
+    assert "After=network.target" in service
+
+
 def test_nginx_protects_all_locations_and_limits_uploads():
     config = (ROOT / "deploy" / "nginx.conf").read_text(encoding="utf-8")
 
