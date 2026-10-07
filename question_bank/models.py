@@ -570,9 +570,9 @@ class Tag(TimeStampedModel):
                 fields=["name", "parent"], name="unique_tag_name_per_parent"
             ),
             models.UniqueConstraint(
-                fields=["name"],
+                fields=["name", "kind"],
                 condition=Q(parent__isnull=True),
-                name="unique_root_tag_name",
+                name="unique_root_tag_name_per_kind",
             ),
         ]
         indexes = [

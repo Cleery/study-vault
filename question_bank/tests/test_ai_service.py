@@ -232,12 +232,31 @@ def test_revoking_knowledge_candidate_removes_link_and_records_action(subject):
         question,
         knowledge=[{"name": card.name, "matched_card_id": str(card.pk), "confidence": 0.93}],
     )
-    question.knowledge_cards.add(card)
-
+    confirm = review_candidate(analysis, "knowledge_point", str(card.pk), "confirm")
     review_candidate(analysis, "knowledge_point", str(card.pk), "revoke")
 
     assert question.knowledge_cards.count() == 0
+    assert confirm.payload["relation_added"] is True
     assert analysis.actions.filter(action_type="revoke", candidate_key=str(card.pk)).exists()
+
+
+@pytest.mark.django_db
+def test_revoking_candidate_keeps_preexisting_manual_knowledge_link(subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="保留人工关联")
+    card = KnowledgeCard.objects.create(subject=subject, name="柯西中值定理", type="theorem")
+    question.knowledge_cards.add(card)
+    analysis = _review_analysis(
+        question,
+        knowledge=[{"name": card.name, "matched_card_id": str(card.pk), "confidence": 0.93}],
+    )
+
+    confirm = review_candidate(analysis, "knowledge_point", str(card.pk), "confirm")
+    review_candidate(analysis, "knowledge_point", str(card.pk), "revoke")
+
+    assert confirm.payload["relation_added"] is False
+    assert question.knowledge_cards.filter(pk=card.pk).exists()
 
 
 @pytest.mark.django_db
@@ -276,8 +295,8 @@ def test_unknown_tag_category_is_rejected_without_creating_tag(subject):
 
 
 @pytest.mark.django_db
-def test_tag_category_conflict_is_rejected_without_linking_existing_tag(subject):
-    from question_bank.ai.actions import InvalidCandidate, review_candidate
+def test_same_tag_name_can_coexist_in_different_categories(subject):
+    from question_bank.ai.actions import review_candidate
 
     question = Question.objects.create(subject=subject, title="标签类别冲突")
     existing = Tag.objects.create(name="放缩", kind="custom")
@@ -286,10 +305,28 @@ def test_tag_category_conflict_is_rejected_without_linking_existing_tag(subject)
         tags=[{"name": "放缩", "category": "method", "confidence": 0.9}],
     )
 
-    with pytest.raises(InvalidCandidate):
-        review_candidate(analysis, "tag", "method:放缩", "confirm")
+    review_candidate(analysis, "tag", "method:放缩", "confirm")
 
-    assert not question.tags.filter(pk=existing.pk).exists()
+    method_tag = Tag.objects.get(name="放缩", kind="method")
+    assert method_tag.pk != existing.pk
+    assert list(question.tags.all()) == [method_tag]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("action", ["confirm", "ignore", "revoke"])
+def test_unknown_tag_category_is_rejected_for_every_action(subject, action):
+    from question_bank.ai.actions import InvalidCandidate, review_candidate
+
+    question = Question.objects.create(subject=subject, title="未知类别全部动作")
+    analysis = _review_analysis(
+        question,
+        tags=[{"name": "越权类别", "category": "unknown", "confidence": 0.9}],
+    )
+
+    with pytest.raises(InvalidCandidate):
+        review_candidate(analysis, "tag", "unknown:越权类别", action)
+
+    assert not analysis.actions.exists()
 
 
 @pytest.mark.django_db

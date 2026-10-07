@@ -71,13 +71,14 @@ def _find_candidate(analysis: QuestionAIAnalysis, candidate_type: str, candidate
     raise InvalidCandidate("候选不存在或已经变化。")
 
 
-def _record_action(analysis, action, candidate_type, candidate_key, item):
+def _record_action(analysis, action, candidate_type, candidate_key, item, **metadata):
+    payload = {"candidate": item, **metadata}
     record, _ = QuestionAIAnalysisAction.objects.get_or_create(
         analysis=analysis,
         action_type=action,
         candidate_type=candidate_type,
         candidate_key=candidate_key,
-        defaults={"payload": {"candidate": item}},
+        defaults={"payload": payload},
     )
     return record
 
@@ -88,31 +89,63 @@ def _review_knowledge(question, analysis, candidate_key, action, item):
     except (KnowledgeCard.DoesNotExist, ValueError) as exc:
         raise InvalidCandidate("候选知识卡片无效。") from exc
     if action == "confirm":
+        relation_added = not question.knowledge_cards.filter(pk=card.pk).exists()
         question.knowledge_cards.add(card)
+        return _record_action(
+            analysis,
+            action,
+            "knowledge_point",
+            candidate_key,
+            item,
+            relation_added=relation_added,
+        )
     elif action == "revoke":
-        question.knowledge_cards.remove(card)
+        confirmed = analysis.actions.filter(
+            action_type="confirm",
+            candidate_type="knowledge_point",
+            candidate_key=candidate_key,
+        ).first()
+        if confirmed and confirmed.payload.get("relation_added") is True:
+            question.knowledge_cards.remove(card)
     return _record_action(analysis, action, "knowledge_point", candidate_key, item)
 
 
-def _review_tag(question, analysis, candidate_key, action, item):
+def _tag_values(item):
     category = str(item.get("category") or "")
     if category not in TAG_CATEGORIES or category not in TAG_KIND_BY_AI_CATEGORY:
         raise InvalidCandidate("标签类别无效。")
     name = _normalized_name(item.get("name"))
     if not name or len(name) > 100:
         raise InvalidCandidate("标签名称无效。")
-    kind = TAG_KIND_BY_AI_CATEGORY[category]
-    tag = Tag.objects.filter(name__iexact=name, parent__isnull=True).first()
+    return name, TAG_KIND_BY_AI_CATEGORY[category]
+
+
+def _review_tag(question, analysis, candidate_key, action, item):
+    name, kind = _tag_values(item)
+    tag = Tag.objects.filter(name__iexact=name, kind=kind, parent__isnull=True).first()
     if action == "confirm":
         if tag is None:
             tag = Tag.objects.create(name=name, kind=kind)
         elif tag.archived or tag.redirect_to_id:
             raise InvalidCandidate("同名标签已归档或已合并。")
-        elif tag.kind != kind:
-            raise InvalidCandidate("同名标签的类别与建议不一致。")
+        relation_added = not question.tags.filter(pk=tag.pk).exists()
         question.tags.add(tag)
+        return _record_action(
+            analysis,
+            action,
+            "tag",
+            candidate_key,
+            item,
+            relation_added=relation_added,
+        )
     elif action == "revoke" and tag is not None:
-        question.tags.remove(tag.resolve_redirect())
+        confirmed = analysis.actions.filter(
+            action_type="confirm",
+            candidate_type="tag",
+            candidate_key=candidate_key,
+        ).first()
+        if confirmed and confirmed.payload.get("relation_added") is True:
+            question.tags.remove(tag.resolve_redirect())
     return _record_action(analysis, action, "tag", candidate_key, item)
 
 
@@ -157,6 +190,8 @@ def review_candidate(
     if latest is None or latest.pk != locked_analysis.pk:
         raise StaleAnalysis("分析版本已经更新。")
     item = _find_candidate(locked_analysis, candidate_type, candidate_key)
+    if candidate_type == "tag":
+        _tag_values(item)
     if action == "ignore":
         return _record_action(locked_analysis, action, candidate_type, candidate_key, item)
     if candidate_type == "knowledge_point":
