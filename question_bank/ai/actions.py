@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from django.db import IntegrityError, OperationalError, transaction
 
 from question_bank.models import (
@@ -302,7 +304,10 @@ def review_candidate(
     item = _find_candidate(locked_analysis, candidate_type, candidate_key)
     if candidate_type == "tag":
         _tag_values(item)
-    previous = locked_analysis.actions.order_by("-updated_at", "-id").first()
+    previous = locked_analysis.actions.filter(
+        candidate_type=candidate_type,
+        candidate_key=candidate_key,
+    ).order_by("-updated_at", "-id").first()
     if action == "ignore" and previous and previous.action_type == "confirm":
             raise InvalidCandidate("已确认的候选不能再忽略。")
     if action == "ignore" and previous and previous.action_type == "revoke":
@@ -312,11 +317,16 @@ def review_candidate(
     if action == "revoke" and (previous is None or previous.action_type != "confirm"):
         raise InvalidCandidate("只有已确认的候选才能撤销。")
     if action == "confirm" and previous and previous.action_type == "confirm":
-        target_id = previous.payload.get("knowledge_card_id") or previous.payload.get("tag_id")
-        target_type = "knowledge_point" if candidate_type == "knowledge_point" else "tag"
-        active_ownership = _ownership(question, target_type, target_id) if target_id else None
-        if active_ownership:
-            return previous
+        previous_payload = previous.payload if isinstance(previous.payload, Mapping) else {}
+        target_id = previous_payload.get("knowledge_card_id") or previous_payload.get("tag_id")
+        if not target_id:
+            if candidate_type == "knowledge_point":
+                target_id = candidate_key
+            elif candidate_type == "tag":
+                name, kind = _tag_values(item)
+                target_id = Tag.objects.filter(
+                    name__iexact=name, kind=kind, parent__isnull=True
+                ).values_list("pk", flat=True).first()
         relation_exists = (
             question.knowledge_cards.filter(pk=target_id).exists()
             if candidate_type == "knowledge_point" and target_id

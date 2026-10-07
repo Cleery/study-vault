@@ -436,6 +436,64 @@ def test_review_rejects_invalid_candidate_boundaries(subject, candidate_type, it
 
 
 @pytest.mark.django_db
+def test_review_state_is_scoped_to_each_candidate(subject):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="多个候选独立审核")
+    first = KnowledgeCard.objects.create(subject=subject, name="第一候选", type="theorem")
+    second = KnowledgeCard.objects.create(subject=subject, name="第二候选", type="theorem")
+    analysis = _review_analysis(
+        question,
+        knowledge=[
+            {"name": first.name, "matched_card_id": str(first.pk), "confidence": 0.9},
+            {"name": second.name, "matched_card_id": str(second.pk), "confidence": 0.8},
+        ],
+    )
+
+    review_candidate(analysis, "knowledge_point", str(first.pk), "confirm")
+    review_candidate(analysis, "knowledge_point", str(second.pk), "ignore")
+    review_candidate(analysis, "knowledge_point", str(first.pk), "revoke")
+
+    assert not question.knowledge_cards.filter(pk=first.pk).exists()
+    assert analysis.actions.filter(candidate_key=str(second.pk), action_type="ignore").exists()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("candidate_type", ["knowledge_point", "tag"])
+def test_confirm_restores_owned_relation_removed_outside_review(subject, candidate_type):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="恢复审核拥有的关联")
+    if candidate_type == "knowledge_point":
+        target = KnowledgeCard.objects.create(subject=subject, name="恢复定理", type="theorem")
+        analysis = _review_analysis(
+            question,
+            knowledge=[{"name": target.name, "matched_card_id": str(target.pk), "confidence": 0.9}],
+        )
+        key = str(target.pk)
+        manager = question.knowledge_cards
+    else:
+        analysis = _review_analysis(
+            question,
+            tags=[{"name": "恢复标签", "category": "method", "confidence": 0.9}],
+        )
+        key = "method:恢复标签"
+        target = None
+        manager = question.tags
+
+    first = review_candidate(analysis, candidate_type, key, "confirm")
+    if target is None:
+        target = Tag.objects.get(name="恢复标签", kind="method")
+    manager.remove(target)
+    first.payload = []
+    first.save(update_fields=["payload", "updated_at"])
+    second = review_candidate(analysis, candidate_type, key, "confirm")
+
+    assert manager.filter(pk=target.pk).exists()
+    assert second.action_type == "confirm"
+
+
+@pytest.mark.django_db
 def test_unknown_tag_category_is_rejected_without_creating_tag(subject):
     from question_bank.ai.actions import InvalidCandidate, review_candidate
 
