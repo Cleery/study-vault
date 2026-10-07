@@ -530,6 +530,12 @@ def _review_items(analysis, field, candidate_type):
             card_type = item.get("card_type", item.get("type", "other"))
             item["candidate_key"] = f"{card_type}:{name}"
             item["display_type"] = card_type
+        if analysis is not None:
+            action = analysis.actions.filter(
+                candidate_type=candidate_type,
+                candidate_key=item["candidate_key"],
+            ).order_by("-updated_at", "-id").first()
+            item["review_action"] = action.action_type if action else ""
         items.append(item)
     return items
 

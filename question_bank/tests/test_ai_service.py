@@ -1,4 +1,6 @@
 import pytest
+import importlib
+from django.apps import apps
 from django.db import OperationalError
 
 from question_bank.models import (
@@ -528,6 +530,86 @@ def test_missing_card_can_be_confirmed_again_after_revoke(subject):
 
     suggestion = analysis.missing_card_suggestions.get(candidate_key=key)
     assert suggestion.status == suggestion.STATUS_PENDING
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("candidate_type", ["knowledge_point", "tag"])
+def test_revoke_keeps_relation_manually_rebuilt_after_external_remove(subject, candidate_type):
+    from question_bank.ai.actions import review_candidate
+
+    question = Question.objects.create(subject=subject, title="人工重建关联")
+    if candidate_type == "knowledge_point":
+        target = KnowledgeCard.objects.create(subject=subject, name="人工重建定理", type="theorem")
+        analysis = _review_analysis(
+            question,
+            knowledge=[{"name": target.name, "matched_card_id": str(target.pk), "confidence": 0.9}],
+        )
+        key = str(target.pk)
+        manager = question.knowledge_cards
+    else:
+        analysis = _review_analysis(
+            question,
+            tags=[{"name": "人工重建标签", "category": "method", "confidence": 0.9}],
+        )
+        key = "method:人工重建标签"
+        target = None
+        manager = question.tags
+
+    review_candidate(analysis, candidate_type, key, "confirm")
+    if target is None:
+        target = Tag.objects.get(name="人工重建标签", kind="method")
+    manager.remove(target)
+    manager.add(target)
+    review_candidate(analysis, candidate_type, key, "revoke")
+
+    assert manager.filter(pk=target.pk).exists()
+
+
+@pytest.mark.django_db
+def test_ownership_migration_resolves_legacy_tag_and_uses_latest_confirm(subject):
+    from question_bank.models import AIReviewOwnership
+
+    question = Question.objects.create(subject=subject, title="旧审核迁移")
+    tag = Tag.objects.create(name="旧标签", kind="method")
+    question.tags.add(tag)
+    first = QuestionAIAnalysis.objects.create(
+        question=question, version=1, input_fingerprint="a" * 64
+    )
+    second = QuestionAIAnalysis.objects.create(
+        question=question, version=2, input_fingerprint="b" * 64
+    )
+    QuestionAIAnalysisAction.objects.create(
+        analysis=first,
+        action_type="confirm",
+        candidate_type="tag",
+        candidate_key="method:旧标签",
+        payload={
+            "candidate": {"name": "旧标签", "category": "method"},
+            "relation_owned": True,
+        },
+    )
+    latest = QuestionAIAnalysisAction.objects.create(
+        analysis=second,
+        action_type="confirm",
+        candidate_type="tag",
+        candidate_key="method:旧标签",
+        payload={
+            "candidate": {"name": "旧标签", "category": "method"},
+            "relation_owned": True,
+        },
+    )
+
+    migration = importlib.import_module(
+        "question_bank.migrations.0010_aireviewownership"
+    )
+    migration.backfill_review_ownerships(apps, None)
+
+    ownership = AIReviewOwnership.objects.get(
+        question=question, target_type="tag", target_id=tag.pk
+    )
+    latest.refresh_from_db()
+    assert ownership.owning_analysis == second
+    assert latest.payload["tag_id"] == str(tag.pk)
 
 
 @pytest.mark.django_db

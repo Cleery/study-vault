@@ -245,7 +245,34 @@ def test_analysis_page_exposes_working_review_forms(client, subject):
     assert 'name="candidate_key" value="other:局部放缩"' in body
     assert "确认关联" in body
     assert "加入待建立" in body
-    assert "disabled" not in body
+    assert 'name="action" value="revoke" disabled' in body
+
+
+@pytest.mark.django_db
+def test_analysis_page_only_enables_valid_next_review_action(client, subject):
+    from question_bank.models import QuestionAIAnalysisAction
+
+    question = Question.objects.create(subject=subject, title="审核状态按钮")
+    card = KnowledgeCard.objects.create(subject=subject, name="介值定理", type="theorem")
+    analysis = QuestionAIAnalysis.objects.create(
+        question=question,
+        version=1,
+        input_fingerprint="4" * 64,
+        status=Question.AI_STATUS_AWAITING_REVIEW,
+        knowledge_points={"items": [{"name": card.name, "matched_card_id": str(card.pk), "confidence": 0.9}]},
+    )
+    QuestionAIAnalysisAction.objects.create(
+        analysis=analysis,
+        action_type="confirm",
+        candidate_type="knowledge_point",
+        candidate_key=str(card.pk),
+        payload={},
+    )
+
+    body = client.get(reverse("question-analysis", args=[question.pk])).content.decode()
+
+    assert 'name="action" value="confirm" disabled' in body
+    assert 'name="action" value="revoke">撤销关联' in body
 
 
 @pytest.mark.django_db

@@ -8,16 +8,43 @@ import uuid
 def backfill_review_ownerships(apps, schema_editor):
     Action = apps.get_model('question_bank', 'QuestionAIAnalysisAction')
     Ownership = apps.get_model('question_bank', 'AIReviewOwnership')
-    for action in Action.objects.filter(action_type='confirm').select_related('analysis'):
+    Tag = apps.get_model('question_bank', 'Tag')
+    Question = apps.get_model('question_bank', 'Question')
+    tag_kinds = {'topic': 'problem_type', 'method': 'method', 'signal': 'custom'}
+    tag_through = Question.tags.through
+    card_through = Question.knowledge_cards.through
+    latest_by_target = {}
+    actions = Action.objects.filter(action_type='confirm').select_related('analysis').order_by(
+        'updated_at', 'id'
+    )
+    for action in actions:
         payload = action.payload if isinstance(action.payload, dict) else {}
-        if payload.get('relation_owned', payload.get('relation_added')) is not True:
-            continue
         if action.candidate_type == 'knowledge_point':
             target_type = 'knowledge_point'
             target_value = payload.get('knowledge_card_id') or action.candidate_key
         elif action.candidate_type == 'tag':
             target_type = 'tag'
             target_value = payload.get('tag_id')
+            if not target_value:
+                candidate = payload.get('candidate') if isinstance(payload.get('candidate'), dict) else {}
+                name = ' '.join(str(candidate.get('name') or '').split())
+                kind = tag_kinds.get(candidate.get('category'))
+                matches = [
+                    tag for tag in Tag.objects.filter(parent__isnull=True, kind=kind)
+                    if tag.name.casefold() == name.casefold()
+                ] if name and kind else []
+                if len(matches) == 1:
+                    target_value = matches[0].pk
+                    payload['tag_id'] = str(target_value)
+                    action.payload = payload
+                    action.save(update_fields=['payload'])
+                else:
+                    payload['ownership_backfill_error'] = (
+                        'tag_target_ambiguous' if len(matches) > 1 else 'tag_target_unavailable'
+                    )
+                    action.payload = payload
+                    action.save(update_fields=['payload'])
+                    continue
         else:
             continue
         try:
@@ -27,8 +54,29 @@ def backfill_review_ownerships(apps, schema_editor):
             action.payload = payload
             action.save(update_fields=['payload'])
             continue
+        latest_by_target[(action.analysis.question_id, target_type, target_id)] = (
+            action,
+            payload.get('relation_owned', payload.get('relation_added')) is True,
+        )
+
+    for (question_id, target_type, target_id), (action, relation_owned) in latest_by_target.items():
+        if not relation_owned:
+            continue
+        relation_exists = (
+            card_through.objects.filter(
+                question_id=question_id, knowledgecard_id=target_id
+            ).exists()
+            if target_type == 'knowledge_point'
+            else tag_through.objects.filter(question_id=question_id, tag_id=target_id).exists()
+        )
+        if not relation_exists:
+            payload = action.payload if isinstance(action.payload, dict) else {}
+            payload['ownership_backfill_error'] = 'relation_missing'
+            action.payload = payload
+            action.save(update_fields=['payload'])
+            continue
         Ownership.objects.update_or_create(
-            question_id=action.analysis.question_id,
+            question_id=question_id,
             target_type=target_type,
             target_id=target_id,
             defaults={'owning_analysis_id': action.analysis_id, 'active': True},

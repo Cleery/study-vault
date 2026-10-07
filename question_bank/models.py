@@ -328,6 +328,38 @@ class AIReviewOwnership(TimeStampedModel):
         indexes = [models.Index(fields=["question", "target_type", "active"])]
 
 
+def _release_ai_ownership(instance, action, reverse, pk_set, target_type, **kwargs):
+    if action not in {"post_remove", "post_clear"}:
+        return
+    if reverse:
+        queryset = AIReviewOwnership.objects.filter(
+            target_type=target_type,
+            target_id=instance.pk,
+            active=True,
+        )
+        if pk_set is not None:
+            queryset = queryset.filter(question_id__in=pk_set)
+    else:
+        queryset = AIReviewOwnership.objects.filter(
+            question_id=instance.pk,
+            target_type=target_type,
+            active=True,
+        )
+        if pk_set is not None:
+            queryset = queryset.filter(target_id__in=pk_set)
+    queryset.update(active=False)
+
+
+@receiver(m2m_changed, sender=Question.knowledge_cards.through)
+def release_knowledge_ownership_on_external_remove(sender, instance, action, reverse, pk_set, **kwargs):
+    _release_ai_ownership(instance, action, reverse, pk_set, "knowledge_point")
+
+
+@receiver(m2m_changed, sender=Question.tags.through)
+def release_tag_ownership_on_external_remove(sender, instance, action, reverse, pk_set, **kwargs):
+    _release_ai_ownership(instance, action, reverse, pk_set, "tag")
+
+
 def question_attachment_upload_to(instance, filename):
     suffix = Path(filename).suffix.lower()
     question_id = getattr(instance, "question_id", None)
